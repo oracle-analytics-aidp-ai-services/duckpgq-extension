@@ -76,7 +76,12 @@ ORDER BY a_id, b_id;
 3	2
 3	4
 
-# Variable-length bounded right edge ->{1,2}: reachable within 1..2 hops.
+# Variable-length bounded right edge ->{1,2}.
+# NOTE: this block is SEMANTICS-BLIND and pins nothing about walk counting --
+# it is written `SELECT DISTINCT a_id, b_id`, so it returns the same rows under
+# one-row-per-walk and under the old one-row-per-endpoint-pair collapse. Kept
+# because it still checks the bound is honoured; the walk-count assertions
+# further down are what pin the semantics.
 # Only the vertex bindings (a, b) are projected for a variable-length edge.
 query II
 SELECT DISTINCT a_id, b_id
@@ -99,14 +104,556 @@ ORDER BY a_id, b_id;
 4	0
 4	3
 
-# Bad pattern: vertex missing a label.
-statement error
-SELECT * FROM graph_match('(a)-[e:know]->(b)', 'Student', 'id', 'know', 'src', 'dst');
+# A vertex without a label is LEGAL, mixed freely with a labelled edge. This
+# asserted the opposite — "missing a label" — which made `(a)-[t]->(b)` a parse
+# error even though SQL/PGQ, Oracle and DFL all use that spelling.
+query II
+SELECT a_id, b_id
+FROM graph_match('(a)-[e:know]->(b)', 'Student', 'id', 'know', 'src', 'dst')
+ORDER BY a_id, b_id;
 ----
-missing a label
+0	1
+0	2
+0	3
+1	2
+1	3
+2	3
+3	0
+4	3
+
+# One name cannot be a vertex label AND an edge label: the synthesized property
+# graph resolves each name to one relation, so the second registration would
+# overwrite the first and the overwritten element would silently resolve to the
+# wrong table.
+# ONE NAME MAY BE BOTH A VERTEX AND AN EDGE LABEL.
+#
+# This was refused. Elements resolve by ROLE now -- there is one vertex relation
+# and one edge relation, so an element's position already determines its relation
+# and a label never selected between them. The refusal cost a real capability: a
+# vertex class and an edge class sharing a name is ordinary, and see the
+# self-graph case further down, where it left no legal spelling at all.
+statement ok
+CREATE TABLE nodes2(id BIGINT, kind VARCHAR);
+INSERT INTO nodes2 VALUES (1,'person');
+
+statement ok
+CREATE TABLE links2(src BIGINT, dst BIGINT, kind VARCHAR);
+INSERT INTO links2 VALUES (1,1,'person');
+
+query II
+SELECT a_id, b_id FROM graph_match('(a:person)-[e:person]->(b:person)','nodes2','id','links2','src','dst',
+                                   vertex_label_column = 'kind', edge_label_column = 'kind')
+ORDER BY a_id, b_id;
+----
+1	1
 
 # Bad pattern: garbage syntax.
+# Asserted on the SPECIFIC tail, not the generic `invalid pattern` prefix that
+# every parser error in this function shares -- otherwise any unrelated parse
+# failure would satisfy this test.
 statement error
 SELECT * FROM graph_match('(a:Student)=>(b:Student)', 'Student', 'id', 'know', 'src', 'dst');
 ----
-invalid pattern
+expected an edge pattern starting with '-' or '<-'
+
+# ---------------------------------------------------------------------------
+# Oracle-parity behaviours. Every count below was measured on Oracle 26ai Free
+# over an equivalent CREATE PROPERTY GRAPH before being asserted here.
+# ---------------------------------------------------------------------------
+
+# An UNLABELLED pattern is legal. It used to be a parse error, which made
+# `(a)-[t]->(b)` — a spelling SQL/PGQ, Oracle and DFL all use — unusable.
+query II
+SELECT a_id, b_id
+FROM graph_match('(a)-[e]->(b)', 'Student', 'id', 'know', 'src', 'dst')
+ORDER BY a_id, b_id;
+----
+0	1
+0	2
+0	3
+1	2
+1	3
+2	3
+3	0
+4	3
+
+# A label that is neither a declared column value nor the relation's own name is
+# REFUSED. It used to be accepted and then ignored, so this returned every row.
+statement error
+SELECT * FROM graph_match('(a:zzz)-[e:know]->(b:zzz)', 'Student', 'id', 'know', 'src', 'dst');
+----
+is not the name of the vertex relation
+
+# TWO DISTINCT VERTEX LABELS in one pattern. Refused outright before with
+# "exactly one vertex label and one edge label are supported per call", which
+# made every cross-class pattern unanswerable. Oracle answers them.
+statement ok
+CREATE TABLE nodes(id BIGINT, kind VARCHAR);
+INSERT INTO nodes VALUES (1,'person'), (2,'person'), (3,'company');
+
+statement ok
+CREATE TABLE links(src BIGINT, dst BIGINT, kind VARCHAR);
+INSERT INTO links VALUES (1,2,'knows'), (1,3,'works_at');
+
+query II
+SELECT a_id, b_id
+FROM graph_match('(a:person)-[e:works_at]->(b:company)', 'nodes', 'id', 'links', 'src', 'dst',
+                 vertex_label_column = 'kind', edge_label_column = 'kind')
+ORDER BY a_id;
+----
+1	3
+
+# ...and the label actually FILTERS: the same shape with mismatched labels is
+# empty, where before both labels were dropped and this returned a row.
+query I
+SELECT count(*)
+FROM graph_match('(a:person)-[e:knows]->(b:company)', 'nodes', 'id', 'links', 'src', 'dst',
+                 vertex_label_column = 'kind', edge_label_column = 'kind');
+----
+0
+
+# An EXACT bound is not a set operation. `{2,2}` used to raise
+# "INTERNAL Error: Set Operations must have at least 2 children" — an internal
+# failure from generated SQL. Oracle answers it.
+query II
+SELECT a_id, b_id
+FROM graph_match('(a:Student)-[e:know]->{2,2}(b:Student)', 'Student', 'id', 'know', 'src', 'dst')
+ORDER BY a_id, b_id;
+----
+0	0
+0	2
+0	3
+0	3
+1	0
+1	3
+2	0
+3	1
+3	2
+3	3
+4	0
+
+# A ZERO lower bound includes the path of no edges, so every vertex pairs with
+# itself. `{0,1}` used to be routed to the plain single-edge join, which has
+# nowhere to put a lower bound of zero, so it silently answered `{1,1}`.
+query I
+SELECT count(*)
+FROM graph_match('(a:Student)-[e:know]->{0,1}(b:Student)', 'Student', 'id', 'know', 'src', 'dst');
+----
+13
+
+# WALK, not reachability. A quantified hop returns one row per WALK; it used to
+# be wrapped in SELECT DISTINCT on the endpoint pair, collapsing every walk that
+# 0 reaches 3 by the direct edge plus exactly two two-hop walks (0->1->3 and
+# 0->2->3), so three rows. 0->3->0->3 is three hops and is out of bound at {1,2}.
+# Under the old endpoint-pair collapse this was 1.
+query I
+SELECT count(*)
+FROM graph_match('(a:Student)-[e:know]->{1,2}(b:Student)', 'Student', 'id', 'know', 'src', 'dst')
+WHERE a_id = 0 AND b_id = 3;
+----
+3
+
+# ===========================================================================
+# Gaps found by review. Each block below was added because the behaviour it
+# covers could be deleted with the whole suite still green.
+# ===========================================================================
+
+statement ok
+CREATE TABLE lv(id BIGINT, kind VARCHAR);
+INSERT INTO lv VALUES (1,'person'),(2,'person'),(3,'company');
+
+statement ok
+CREATE TABLE le(src BIGINT, dst BIGINT, kind VARCHAR);
+INSERT INTO le VALUES (1,2,'knows'),(2,3,'works_at'),(1,3,'works_at');
+
+# A LABEL ON A QUANTIFIED HOP CONSTRAINS EVERY STEP.
+#
+# The headline claim of the label work, and it had no coverage at all: deleting
+# the per-step filter outright, AND applying it to the first step only, both left
+# the suite green. The first-step-only reading is exactly what the code comment
+# says it rejects, so this is the assertion that makes the comment true.
+#
+# The only two-hop walk here is 1 -knows-> 2 -works_at-> 3. Requiring 'knows'
+# throughout therefore matches nothing; requiring it on the first step only would
+# match it.
+query I
+SELECT count(*) FROM graph_match('(a)-[e:knows]->{2,2}(b)','lv','id','le','src','dst',
+                                 edge_label_column = 'kind');
+----
+0
+
+# CONTROL: the walk exists when nothing filters it, so the zero above is the
+# label doing its job rather than the lowering returning nothing.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{2,2}(b)','lv','id','le','src','dst');
+----
+1
+
+# ...and a label that DOES hold for every step still matches.
+query II
+SELECT a_id, b_id FROM graph_match('(a)-[e:works_at]->{1,1}(b)','lv','id','le','src','dst',
+                                   edge_label_column = 'kind')
+ORDER BY a_id, b_id;
+----
+1	3
+2	3
+
+# THE LEFTMOST VERTEX'S LABEL FILTERS TOO.
+#
+# Both existing label tests are decided by the TARGET vertex, so the source
+# vertex's filter could be deleted with the suite green. Node 1 is a person, so
+# no works_at edge leaves a company; without the source filter this returns 2.
+query I
+SELECT count(*) FROM graph_match('(a:company)-[e:works_at]->(b:company)','lv','id','le','src','dst',
+                                 vertex_label_column = 'kind', edge_label_column = 'kind');
+----
+0
+
+# AN UNLABELLED ELEMENT MUST NOT BE FILTERED, even when a label column is given.
+#
+# Unlabelled elements carry a reserved internal label. If that reserved name
+# reached a filter, it would be compared against a value no row holds and the
+# query would return nothing. Removing the guard left the suite green while
+# turning both of these into 0.
+query I
+SELECT count(*) FROM graph_match('(a)-[e:knows]->(b)','lv','id','le','src','dst',
+                                 vertex_label_column = 'kind', edge_label_column = 'kind');
+----
+1
+
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->(b)','lv','id','le','src','dst',
+                                 vertex_label_column = 'kind', edge_label_column = 'kind');
+----
+3
+
+# THE EDGE-SIDE "must name the relation" REFUSAL.
+#
+# The existing test of this rule uses an edge label that legitimately names the
+# edge relation, so only the vertex branch ever fired; the edge branch could be
+# skipped with the suite green, and then `(a:Student)-[e:qqq]->(b:Student)`
+# returned all 8 edges silently.
+statement error
+SELECT * FROM graph_match('(a:Student)-[e:qqq]->(b:Student)','Student','id','know','src','dst');
+----
+is not the name of the edge relation
+
+# A RESERVED LABEL IS REFUSED, in either case spelling.
+statement error
+SELECT * FROM graph_match('(a:__duckpgq_unlabelled_vertex)-[e:know]->(b:Student)',
+                          'Student','id','know','src','dst');
+----
+reserved for internal use
+
+statement error
+SELECT * FROM graph_match('(a:Student)-[e:__DUCKPGQ_UNLABELLED_EDGE]->(b:Student)',
+                          'Student','id','know','src','dst');
+----
+reserved for internal use
+
+# A NULL label column is a user error, not an internal assertion. It used to
+# raise `INTERNAL Error: Calling StringValue::Get on a NULL value` with a stack
+# trace, and would abort the process in a CRASH_ON_ASSERT build.
+statement error
+SELECT * FROM graph_match('(a:Student)-[e:know]->(b:Student)','Student','id','know','src','dst',
+                          vertex_label_column = NULL);
+----
+vertex_label_column must be a column name, not NULL
+
+statement error
+SELECT * FROM graph_match('(a:Student)-[e:know]->(b:Student)','Student','id','know','src','dst',
+                          edge_label_column = NULL);
+----
+edge_label_column must be a column name, not NULL
+
+# ONE NAME MAY BE BOTH A VERTEX AND AN EDGE LABEL.
+#
+# This was refused, which cost a real capability: a vertex class and an edge
+# class sharing a name is ordinary, and for a SELF-GRAPH (one table as both
+# relations) the no-label-column rule left no legal spelling at all. Elements
+# resolve by role now, so the name is unambiguous.
+statement ok
+CREATE TABLE sg(id BIGINT, src BIGINT, dst BIGINT);
+INSERT INTO sg VALUES (1,1,2),(2,2,1);
+
+query II
+SELECT a_id, b_id FROM graph_match('(a:sg)-[e:sg]->(b:sg)','sg','id','sg','src','dst')
+ORDER BY a_id, b_id;
+----
+1	2
+2	1
+
+# BOUND SHAPES. The routing predicate was rewritten by this change and only
+# {0,1} and {2,2} were exercised. Counts derived from the walk counts of the
+# `know` fixture per exact length: 8, 11, 20, 32, 50, 83, 134 for lengths 1..7,
+# plus 5 length-zero pairs.
+
+# {1,1} is the exact boundary: the one bound that must still take the plain
+# single-edge join rather than the recursion.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{1,1}(b)','Student','id','know','src','dst');
+----
+8
+
+# {0,0} is the zero-only bound: every vertex paired with itself, no edges.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{0,0}(b)','Student','id','know','src','dst');
+----
+5
+
+# An exact bound above 2.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{3,3}(b)','Student','id','know','src','dst');
+----
+20
+
+# A zero lower bound with more than one non-zero length: 5 + 8 + 11.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{0,2}(b)','Student','id','know','src','dst');
+----
+24
+
+# WRONG ROW COUNTS FROM THE PLANNER. This is the regression guard for the
+# defect that made the bounded expansion emit a union of near-identical
+# branches: DuckDB v1.5.0's `common_subplan` optimizer mis-planned that shape
+# and returned wrong counts -- {1,7} short by 134, {9,9} over by 6.5x, {8,9}
+# empty -- silently, and not monotonically in the bound. The recursion scans the
+# edge relation once per step, so there are no identical subtrees to merge.
+#
+# 8+11+20+32+50+83+134 = 338.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{1,7}(b)','Student','id','know','src','dst');
+----
+338
+
+# The single-branch case that was wrong even with no union at all (returned 154).
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{7,7}(b)','Student','id','know','src','dst');
+----
+134
+
+# The case that returned NOTHING. 215 + 350 = 565.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->{8,9}(b)','Student','id','know','src','dst');
+----
+565
+
+# TWO QUANTIFIED HOPS in one pattern, which exercises alias uniqueness across
+# two independent expansions. Length-2 walks composed of two length-1 walks:
+# 11 two-edge walks, and every one splits as 1+1 exactly once.
+query I
+SELECT count(*) FROM graph_match('(a)-[x]->{1,1}(m)-[y]->{1,1}(b)','Student','id','know','src','dst');
+----
+11
+
+# A quantified hop beside a plain one.
+query I
+SELECT count(*) FROM graph_match('(a)-[x]->{1,2}(m)-[y]->(b)','Student','id','know','src','dst');
+----
+31
+
+# An upper bound past the recursion cap is refused, and says so.
+statement error
+SELECT * FROM graph_match('(a)-[e]->{1,17}(b)','Student','id','know','src','dst');
+----
+bounded upper limit
+
+# The {0,1} rows themselves, not just their count -- the point of a zero lower
+# bound is WHICH rows it adds, and a count alone would pass on 13 wrong rows.
+query II
+SELECT a_id, b_id FROM graph_match('(a)-[e]->{0,1}(b)','Student','id','know','src','dst')
+ORDER BY a_id, b_id;
+----
+0	0
+0	1
+0	2
+0	3
+1	1
+1	2
+1	3
+2	2
+2	3
+3	0
+3	3
+4	3
+4	4
+
+# THE LABEL READING IS A PROPERTY OF THE CALL, NOT OF EACH ELEMENT KIND.
+#
+# In the asymmetric mode -- one label column given, the other not -- a label of
+# the uncovered kind used to fall back to the relation-name rule independently.
+# When it happened to name that relation it was accepted and NO filter was
+# emitted, which is the silent ignore this whole feature exists to remove.
+# Measured before the fix: three rows, two of them `hates` edges.
+statement ok
+CREATE TABLE cperson(id BIGINT, kind VARCHAR);
+INSERT INTO cperson VALUES (1,'person'),(2,'person'),(3,'person');
+
+statement ok
+CREATE TABLE knows(src BIGINT, dst BIGINT, kind VARCHAR);
+INSERT INTO knows VALUES (1,2,'knows'),(2,3,'hates'),(1,3,'hates');
+
+statement error
+SELECT * FROM graph_match('(a:person)-[e:knows]->(b:person)','cperson','id','knows','src','dst',
+                          vertex_label_column = 'kind');
+----
+would be silently dropped
+
+# The same refusal the other way round, since the old bug fired in both
+# directions.
+statement error
+SELECT * FROM graph_match('(a:person)-[e:knows]->(b:person)','cperson','id','knows','src','dst',
+                          edge_label_column = 'kind');
+----
+would be silently dropped
+
+# CONTROL: with both columns the pattern is answerable, and answers correctly --
+# one `knows` edge between two people, not the two `hates` edges.
+query II
+SELECT a_id, b_id FROM graph_match('(a:person)-[e:knows]->(b:person)','cperson','id','knows','src','dst',
+                                   vertex_label_column = 'kind', edge_label_column = 'kind');
+----
+1	2
+
+# CONTROL: the asymmetric mode is fine when the pattern writes no label of the
+# uncovered kind. Nothing is dropped, so nothing is refused.
+query I
+SELECT count(*) FROM graph_match('(a:person)-[e]->(b:person)','cperson','id','knows','src','dst',
+                                 vertex_label_column = 'kind');
+----
+3
+
+# An empty label column is not an absent one. Every internal test is
+# `column.empty()`, so an empty string silently selected the relation-name
+# reading and then reported "no vertex_label_column was given" to a caller who
+# had given one.
+statement error
+SELECT * FROM graph_match('(a:cperson)-[e:knows]->(b:cperson)','cperson','id','knows','src','dst',
+                          vertex_label_column = '');
+----
+was given as an empty string
+
+# A REUSED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT ON A PLAIN DIRECTED HOP,
+# AND IS REFUSED ANYWHERE ELSE.
+#
+# Both hops join against ONE alias, so the conditions become
+# `b.id = e.src AND b.id = e.dst` and the answer is the self-loops -- which is
+# the question the pattern asks, and what Oracle answers.
+#
+# That alias only exists for a plain directed hop. A quantified hop is lowered
+# to its own recursive CTE and an undirected hop to a cross-joined UNION ALL,
+# and neither registers its edge binding, so the constraint would silently
+# vanish (quantified) or collide (undirected). Oracle refuses the quantified
+# forms too: ORA-49001 when one hop is quantified, ORA-49002 when both are.
+statement ok
+CREATE TABLE rv(id BIGINT);
+INSERT INTO rv VALUES (1),(2),(3);
+
+statement ok
+CREATE TABLE rl(src BIGINT, dst BIGINT);
+INSERT INTO rl VALUES (1,2),(2,3),(2,2);
+
+# A REPEATED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT, and Oracle answers it.
+# `rl` holds 1->2, 2->3 and the self-loop 2->2, so the only edge whose
+# destination is its own source is 2->2 and that is the only match.
+query III
+SELECT a_id, b_id, c_id FROM graph_match('(a)-[e]->(b)-[e]->(c)','rv','id','rl','src','dst');
+----
+2	2	2
+
+statement error
+SELECT * FROM graph_match('(e)-[e]->(b)','rv','id','rl','src','dst');
+----
+names both a vertex and an edge
+
+# A REVERSED hop reuses the alias the same way, so it is legal too. Oracle
+# answers this with the same three rows.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->(b)<-[e]-(c)','rv','id','rl','src','dst');
+----
+3
+
+# Three plain hops on one edge: still only the self-loop.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->(b)-[e]->(c)-[e]->(d)','rv','id','rl','src','dst');
+----
+1
+
+# A QUANTIFIED hop cannot share an edge name. Its edge binding never enters the
+# alias map, so the constraint would be inert and the query would silently
+# answer a different question. Oracle: ORA-49001 / ORA-49002.
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)-[e]->{1,2}(c)','rv','id','rl','src','dst');
+----
+is reused on a hop that carries a quantifier
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->{1,2}(b)-[e]->(c)','rv','id','rl','src','dst');
+----
+one of its hops carries a quantifier
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->{1,2}(b)-[e]->{1,2}(c)','rv','id','rl','src','dst');
+----
+is reused on a hop that carries a quantifier
+
+# The worst shape the blanket permission allowed: one edge required to be two
+# different labels at once, which answered four rows. Its own edge table, because
+# the refusal must be what rejects this -- against a table with no label column a
+# missing-column error would pass this test for the wrong reason.
+statement ok
+CREATE TABLE rl_lbl(src BIGINT, dst BIGINT, lbl VARCHAR);
+
+statement ok
+INSERT INTO rl_lbl VALUES (1,2,'knows'),(2,3,'works'),(2,2,'knows');
+
+statement error
+SELECT * FROM graph_match('(a)-[e:knows]->{1,2}(b)-[e:works]->(c)','rv','id','rl_lbl','src','dst',
+                          edge_label_column = 'lbl');
+----
+carries a quantifier
+
+# An UNDIRECTED hop cannot share an edge name either. Two of them alias the same
+# generated subquery, and DuckDB reported its own "Ambiguous reference to table"
+# for a pattern the caller wrote. Oracle does answer this one, so the refusal is
+# a deliberate narrow gap with a clear message.
+statement error
+SELECT * FROM graph_match('(a)-[e]-(b)-[e]-(c)','rv','id','rl','src','dst');
+----
+is reused on an undirected hop
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)-[e]-(c)','rv','id','rl','src','dst');
+----
+is reused on an undirected hop
+
+# EVERY POSITIONAL ARGUMENT REFUSES NULL. `StringValue::Get` on a NULL throws an
+# internal assertion failure, and a CRASH_ON_ASSERT build -- how DuckDB's own CI
+# builds -- turns that into abort(). A value the caller typed must not do that.
+statement error
+SELECT * FROM graph_match(NULL,'rv','id','rl','src','dst');
+----
+pattern must not be NULL
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)',NULL,'id','rl','src','dst');
+----
+vertex_table must not be NULL
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)','rv','id','rl','src',NULL);
+----
+destination_column must not be NULL
+
+# CONTROL: distinct edge variables give the four two-hop walks.
+query I
+SELECT count(*) FROM graph_match('(a)-[e1]->(b)-[e2]->(c)','rv','id','rl','src','dst');
+----
+4
+
+# CONTROL: a repeated VERTEX variable is a cycle and stays legal. Here the only
+# closed two-hop walk is 2->2->2.
+query I
+SELECT count(*) FROM graph_match('(a)-[e1]->(b)-[e2]->(a)','rv','id','rl','src','dst');
+----
+1

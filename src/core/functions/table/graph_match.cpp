@@ -40,6 +40,8 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/common_table_expression_info.hpp"
 
 #include <duckpgq/core/functions/table.hpp>
 #include <duckpgq/core/utils/duckpgq_utils.hpp>
@@ -50,6 +52,30 @@ namespace duckdb {
 
 namespace {
 
+//! Largest upper bound a quantified hop may ask for.
+//!
+//! This bounds RECURSION DEPTH, and nothing else. It is emphatically NOT a bound
+//! on the result: one row per walk means the output grows with the graph's
+//! branching factor, so on a 20-vertex complete digraph `{1,6}` is around 993
+//! million rows. It used to bound the result as a side effect, because the outer
+//! DISTINCT capped output at the number of distinct endpoint pairs; that
+//! DISTINCT is gone by design, and this constant did not become a replacement
+//! for it. A caller that needs a row bound needs its own LIMIT.
+//!
+//! SO THE PATTERN ARGUMENT IS TRUSTED INPUT. Treat it as such: a 21-character
+//! pattern can ask for more work than the process will ever finish. Measured on
+//! a complete digraph of 8 vertices and 56 edges, `{9,9}` returns 322,828,856
+//! rows in about 16 seconds, and `{16,16}` asks for roughly 2.7e14 - it does not
+//! return, and there is no cost estimate, row cap, or timeout in this path to
+//! stop it. `count(*)` does not help, because the recursive CTE materialises the
+//! walks before they are counted.
+//!
+//! Those counts are CORRECT for walk semantics, which is the point: this is not
+//! an expansion bug to fix but a property of answering "one row per walk", and
+//! the reference target grows the same way. It is recorded here because a caller
+//! that accepts a pattern string from somewhere less trusted than its own source
+//! code is exposing the database process to it, and nothing below this line will
+//! warn them.
 constexpr int64_t MAX_BOUNDED_PATH_EXPANSION_UPPER = 16;
 
 unique_ptr<ParsedExpression> BuildConjunction(vector<unique_ptr<ParsedExpression>> &conditions) {
@@ -76,6 +102,39 @@ void CrossJoinTableRef(unique_ptr<TableRef> &from_clause, unique_ptr<TableRef> t
 	}
 }
 
+//! `<binding>.<label_column> = '<label>'` — the filter that makes a written
+//! label mean something.
+//!
+//! Without this the label was parsed, used to look up the element's table, and
+//! then dropped. With one vertex table and one edge table behind graph_match
+//! that lookup always succeeded, so every label resolved and none filtered:
+//! `(a:Person)-[x:knows]->(b:Person)` returned every edge in the graph. Measured
+//! on a three-vertex fixture with two classes and two predicates, the pattern
+//! `(a:zzz)-[x:qqq]->(b:zzz)` — labels that exist nowhere — returned all rows.
+//! CASE-SENSITIVE, DELIBERATELY, AND ASYMMETRIC WITH THE RELATION-NAME RULE.
+//!
+//! Two readings of a written label coexist here, and they fold case differently
+//! because they compare different kinds of thing:
+//!
+//!   * Against a RELATION NAME (the no-label-column rule) the comparison is
+//!     case-insensitive, because SQL identifiers fold. `(a:STUDENT)` over the
+//!     `Student` table matches.
+//!   * Against a COLUMN VALUE — this function — the comparison is exact, because
+//!     it is a data value and `'Person' <> 'person'` in SQL. `(a:PERSON)` against
+//!     rows holding `'person'` matches nothing.
+//!
+//! So a caller moving from the relation-name form to the label-column form can
+//! lose every row to a spelling that was previously accepted. That is recorded
+//! rather than smoothed over: case-folding the value comparison would mean
+//! inventing a collation for someone else's data, and folding the identifier
+//! comparison would contradict SQL. Callers that generate patterns should emit
+//! the label spelling their data holds.
+unique_ptr<ParsedExpression> BuildLabelFilter(const string &binding, const string &label_column, const string &label) {
+	auto column = make_uniq<ColumnRefExpression>(label_column, binding);
+	auto value = make_uniq<ConstantExpression>(Value(label));
+	return make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL, std::move(column), std::move(value));
+}
+
 } // namespace
 
 shared_ptr<PropertyGraphTable> GraphMatchFunction::FindGraphTable(const string &label,
@@ -85,6 +144,26 @@ shared_ptr<PropertyGraphTable> GraphMatchFunction::FindGraphTable(const string &
 		throw BinderException("graph_match: the label '%s' is not present in the pattern's tables", label);
 	}
 	return graph_table_entry->second;
+}
+
+shared_ptr<PropertyGraphTable> GraphMatchFunction::ResolveByRole(bool is_vertex, CreatePropertyGraphInfo &pg_table) {
+	// RESOLVED BY ROLE, NOT BY LABEL. There is exactly one vertex relation and one
+	// edge relation behind graph_match, so the element's position in the pattern
+	// already determines its relation and a label lookup adds nothing.
+	//
+	// Resolving by label instead made one name unusable as both a vertex and an
+	// edge label, because a single `label_map` holds one entry per name. That cost
+	// a real capability twice over. A vertex class and an edge class sharing a
+	// name (`type`, `member`, `owns`) is ordinary in the mappings this feature
+	// serves. And for a SELF-GRAPH — one table passed as both the vertex and the
+	// edge relation — the no-label-column rule says a label must name its
+	// relation, so the only legal spelling was `(a:t)-[e:t]->(b:t)`, which the
+	// collision refusal then rejected: labels were unusable on such a graph
+	// altogether.
+	if (is_vertex) {
+		return pg_table.vertex_tables[0];
+	}
+	return pg_table.edge_tables[0];
 }
 
 unique_ptr<ParsedExpression> GraphMatchFunction::CreateMatchJoinExpression(vector<string> vertex_keys,
@@ -267,12 +346,29 @@ void GraphMatchFunction::AddEdgeJoins(const shared_ptr<PropertyGraphTable> &edge
 	}
 }
 
+bool GraphMatchFunction::BoundNeedsExpansion(const SubPath &subpath) {
+	// A WRITTEN BOUND THAT IS NOT EXACTLY `{1,1}` NEEDS THE RECURSION.
+	//
+	// One predicate in one place, deliberately. This test existed twice — here and
+	// at the ProcessPathList call site — and the two spellings disagreed: the call
+	// site said `upper > 1`, which sent `{0,1}` down the ordinary single-edge join
+	// path. That path has nowhere to put a lower bound of zero, so the zero-length
+	// match was dropped and `{0,1}` silently answered `{1,1}`. Oracle answers
+	// `{0,n}` by including each vertex paired with itself (measured: `{0,2}` on a
+	// four-vertex chain returns 9 rows = 4 + 3 + 2), so the rows were simply
+	// missing. Two copies of a routing predicate is how that got in.
+	return subpath.lower != 1 || subpath.upper != 1;
+}
+
 bool GraphMatchFunction::CanExpandBoundedSubpath(const shared_ptr<PropertyGraphTable> &edge_table, SubPath *subpath,
                                                 PGQMatchType edge_type) {
 	if (edge_type != PGQMatchType::MATCH_EDGE_RIGHT) {
 		return false;
 	}
-	if (subpath->upper <= 1 || subpath->upper > MAX_BOUNDED_PATH_EXPANSION_UPPER) {
+	if (!BoundNeedsExpansion(*subpath)) {
+		return false;
+	}
+	if (subpath->upper > MAX_BOUNDED_PATH_EXPANSION_UPPER) {
 		return false;
 	}
 	if (edge_table->source_reference != edge_table->destination_reference) {
@@ -289,99 +385,231 @@ void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphT
                                                 const string &prev_binding, const string &edge_binding,
                                                 const string &next_binding,
                                                 vector<unique_ptr<ParsedExpression>> &conditions,
-                                                unique_ptr<TableRef> &from_clause, int32_t &extra_alias_counter) {
+                                                unique_ptr<TableRef> &from_clause, int32_t &extra_alias_counter,
+                                                const string &edge_label, const string &edge_label_column) {
+	// A RECURSIVE CTE, not a union of fixed-length branches. This shape is a
+	// correctness requirement, not a tidiness preference.
+	//
+	// The previous shape emitted one branch per length, and each branch
+	// cross-joined the edge table to itself once per hop: length 7 meant seven
+	// identical scans of one table in a single plan. DuckDB v1.5.0's
+	// `common_subplan` optimizer mis-plans that, and the result is a WRONG ROW
+	// COUNT rather than an error. Measured on the fixture in
+	// test/sql/scalar/graph_match.test (5 vertices, 8 edges), against walk counts
+	// derived independently by iterated self-join:
+	//
+	//     bound    expected   emitted
+	//     {1,7}         338       204     short by 134
+	//     {6,7}         217        83     short by 134
+	//     {7,7}         134       154     20 spurious rows
+	//     {8,9}         565         0     returned nothing
+	//     {9,9}         350      2300     6.5x over-count
+	//
+	// `SET disabled_optimizers='common_subplan'` makes every one of those correct,
+	// which is what identifies the optimizer as the cause. `{7,7}` is a SINGLE
+	// branch, so the trigger is repeated identical scans WITHIN one plan, not
+	// sharing across branches.
+	//
+	// THE OPTIMIZER BUG IS FIXED UPSTREAM, IN 1.5.1. It is present only in 1.5.0,
+	// which is the version this extension is pinned to build against. Reduced to
+	// standalone SQL — two UNION ALL branches of 6 and 7 self-joins over a
+	// 5-edge, 4-vertex fixture, no extension involved — the count is 12 on 1.5.0
+	// and the correct 10 on 1.5.1, 1.5.2, 1.5.3, 1.5.4 and 1.5.5. So there is
+	// nothing to report upstream; the exposure is entirely the engine pin.
+	//
+	// That leaves two ways to be correct, and this is the one that does not need
+	// anybody's permission. Bumping the engine pin would also fix it, but the
+	// pinned DuckDB version and the built artifact are a single unit that has to
+	// move together, and it changes every other consumer of that pin too — a
+	// decision for whoever owns it, not a side effect of a graph fix.
+	//
+	// The recursion is worth having regardless of the engine, because it does not
+	// depend on optimizer behaviour at all: it scans the edge table once per step
+	// instead of once per hop per branch, so there are no identical subtrees to
+	// merge. A hop cap was rejected because the breakage is not a function of the
+	// bound — the same sweep over a 4-vertex chain and a 2-vertex cycle is correct
+	// at every bound up to 16 while the 5-vertex graph above breaks at 7 — so no
+	// limit could be shown safe, only unobserved. A wrapper subquery around each
+	// edge scan also produced correct answers and was rejected too: it perturbs
+	// the planner into a different choice without removing the ambiguity.
+	//
+	// The emitted shape, for bounds {lo,hi}:
+	//
+	//   WITH RECURSIVE <alias>_walk(__duckpgq_src_0, __duckpgq_dst_0, __duckpgq_len) AS (
+	//       SELECT v.<vid>, v.<vid>, 0 FROM <vertex_table> v
+	//     UNION ALL
+	//       SELECT w.__duckpgq_src_0, e.<dst_fk>, w.__duckpgq_len + 1
+	//         FROM <alias>_walk w
+	//         JOIN <vertex_table> iv ON iv.<vid> = w.__duckpgq_dst_0
+	//         JOIN <edge_table> e ON e.<src_fk> = w.__duckpgq_dst_0
+	//              [AND e.<label_col> = '<label>']
+	//        WHERE w.__duckpgq_len < hi
+	//   )
+	//   SELECT __duckpgq_src_0, __duckpgq_dst_0 FROM <alias>_walk
+	//    WHERE __duckpgq_len BETWEEN lo AND hi
+	//
+	// UNION ALL, never UNION: one row per walk is the whole point, and UNION would
+	// reintroduce the endpoint-pair collapse this commit removed.
+	//
+	// The length-0 base row is emitted whatever `lower` is, and filtered out by
+	// the final BETWEEN when `lower > 0`. That is what makes `{0,n}` fall out
+	// rather than needing its own branch.
 	auto path_alias = edge_binding + "_bounded_path_" + std::to_string(static_cast<uint32_t>(extra_alias_counter++));
-	vector<string> source_columns;
-	vector<string> destination_columns;
-	for (idx_t key_idx = 0; key_idx < edge_table->source_pk.size(); key_idx++) {
-		source_columns.push_back("__duckpgq_src_" + std::to_string(key_idx));
-		destination_columns.push_back("__duckpgq_dst_" + std::to_string(key_idx));
+	const auto cte_name = path_alias + "_walk";
+
+	// Single-column keys only. graph_match synthesizes its own property graph from
+	// scalar arguments (see MakeEdgeSpec and GraphMatchBindReplace), so every key
+	// here is exactly one column; a composite key cannot arise. Asserted rather
+	// than assumed, because the recursion below carries one src and one dst column
+	// and would silently drop the rest.
+	if (edge_table->source_pk.size() != 1 || edge_table->destination_pk.size() != 1 ||
+	    edge_table->source_fk.size() != 1 || edge_table->destination_fk.size() != 1) {
+		throw InternalException("graph_match: bounded path expansion requires single-column keys, got %llu/%llu",
+		                        static_cast<unsigned long long>(edge_table->source_pk.size()),
+		                        static_cast<unsigned long long>(edge_table->destination_pk.size()));
+	}
+	const auto &vertex_key = edge_table->source_pk[0];
+	const auto &edge_src_fk = edge_table->source_fk[0];
+	const auto &edge_dst_fk = edge_table->destination_fk[0];
+	const string src_column = "__duckpgq_src_0";
+	const string dst_column = "__duckpgq_dst_0";
+	const string len_column = "__duckpgq_len";
+
+	// --- base term: every vertex, paired with itself, at length 0 ---------------
+	const auto base_vertex_alias = path_alias + "_v0";
+	auto base = make_uniq<SelectNode>();
+	base->from_table = edge_table->source_pg_table->CreateBaseTableRef(base_vertex_alias);
+	{
+		auto s = make_uniq<ColumnRefExpression>(vertex_key, base_vertex_alias);
+		s->alias = src_column;
+		base->select_list.push_back(std::move(s));
+		auto d = make_uniq<ColumnRefExpression>(vertex_key, base_vertex_alias);
+		d->alias = dst_column;
+		base->select_list.push_back(std::move(d));
+		auto z = make_uniq<ConstantExpression>(Value::BIGINT(0));
+		z->alias = len_column;
+		base->select_list.push_back(std::move(z));
 	}
 
-	auto union_node = make_uniq<SetOperationNode>();
-	union_node->setop_type = SetOperationType::UNION;
-	union_node->setop_all = true;
+	// --- recursive term: one more edge --------------------------------------------
+	const auto walk_alias = path_alias + "_w";
+	const auto step_edge_alias = path_alias + "_e";
+	const auto step_vertex_alias = path_alias + "_iv";
+	auto step = make_uniq<SelectNode>();
+	{
+		auto walk_ref = make_uniq<BaseTableRef>();
+		walk_ref->table_name = cte_name;
+		walk_ref->alias = walk_alias;
+		step->from_table = std::move(walk_ref);
+		// The intermediate vertex is joined, matching what the branch shape did:
+		// it required each in-between vertex to exist in the vertex relation.
+		CrossJoinTableRef(step->from_table,
+		                  edge_table->destination_pg_table->CreateBaseTableRef(step_vertex_alias));
+		CrossJoinTableRef(step->from_table, edge_table->CreateBaseTableRef(step_edge_alias));
 
-	for (int64_t path_length = subpath->lower; path_length <= subpath->upper; path_length++) {
-		auto branch = make_uniq<SelectNode>();
-		branch->AddDistinct();
-		vector<unique_ptr<ParsedExpression>> branch_conditions;
+		auto s = make_uniq<ColumnRefExpression>(src_column, walk_alias);
+		s->alias = src_column;
+		step->select_list.push_back(std::move(s));
+		auto d = make_uniq<ColumnRefExpression>(edge_dst_fk, step_edge_alias);
+		d->alias = dst_column;
+		step->select_list.push_back(std::move(d));
+		// Built with push_back rather than a braced list: an initializer_list
+		// copies its elements, and unique_ptr is not copyable.
+		vector<unique_ptr<ParsedExpression>> len_args;
+		len_args.push_back(make_uniq<ColumnRefExpression>(len_column, walk_alias));
+		len_args.push_back(make_uniq<ConstantExpression>(Value::BIGINT(1)));
+		auto next_len = make_uniq<FunctionExpression>("+", std::move(len_args));
+		next_len->alias = len_column;
+		step->select_list.push_back(std::move(next_len));
 
-		if (path_length == 0) {
-			auto vertex_alias = path_alias + "_v_0";
-			branch->from_table = edge_table->source_pg_table->CreateBaseTableRef(vertex_alias);
-			for (idx_t key_idx = 0; key_idx < edge_table->source_pk.size(); key_idx++) {
-				auto source_ref = make_uniq<ColumnRefExpression>(edge_table->source_pk[key_idx], vertex_alias);
-				source_ref->alias = source_columns[key_idx];
-				branch->select_list.push_back(std::move(source_ref));
-
-				auto destination_ref = make_uniq<ColumnRefExpression>(edge_table->destination_pk[key_idx], vertex_alias);
-				destination_ref->alias = destination_columns[key_idx];
-				branch->select_list.push_back(std::move(destination_ref));
-			}
-		} else {
-			vector<string> edge_aliases;
-			for (int64_t edge_idx = 0; edge_idx < path_length; edge_idx++) {
-				auto current_edge_alias =
-				    path_alias + "_e_" + std::to_string(path_length) + "_" + std::to_string(edge_idx);
-				edge_aliases.push_back(current_edge_alias);
-				CrossJoinTableRef(branch->from_table, edge_table->CreateBaseTableRef(current_edge_alias));
-			}
-
-			for (int64_t vertex_idx = 0; vertex_idx + 1 < path_length; vertex_idx++) {
-				auto vertex_alias = path_alias + "_v_" + std::to_string(path_length) + "_" + std::to_string(vertex_idx);
-				CrossJoinTableRef(branch->from_table, edge_table->destination_pg_table->CreateBaseTableRef(vertex_alias));
-				branch_conditions.push_back(CreateMatchJoinExpression(edge_table->destination_pk,
-				                                                      edge_table->destination_fk, vertex_alias,
-				                                                      edge_aliases[static_cast<idx_t>(vertex_idx)]));
-				branch_conditions.push_back(CreateMatchJoinExpression(edge_table->source_pk, edge_table->source_fk,
-				                                                      vertex_alias,
-				                                                      edge_aliases[static_cast<idx_t>(vertex_idx + 1)]));
-			}
-
-			for (idx_t key_idx = 0; key_idx < edge_table->source_fk.size(); key_idx++) {
-				auto source_ref = make_uniq<ColumnRefExpression>(edge_table->source_fk[key_idx], edge_aliases[0]);
-				source_ref->alias = source_columns[key_idx];
-				branch->select_list.push_back(std::move(source_ref));
-
-				auto destination_ref =
-				    make_uniq<ColumnRefExpression>(edge_table->destination_fk[key_idx], edge_aliases[path_length - 1]);
-				destination_ref->alias = destination_columns[key_idx];
-				branch->select_list.push_back(std::move(destination_ref));
-			}
+		vector<unique_ptr<ParsedExpression>> step_conditions;
+		step_conditions.push_back(make_uniq<ComparisonExpression>(
+		    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(vertex_key, step_vertex_alias),
+		    make_uniq<ColumnRefExpression>(dst_column, walk_alias)));
+		step_conditions.push_back(make_uniq<ComparisonExpression>(
+		    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(edge_src_fk, step_edge_alias),
+		    make_uniq<ColumnRefExpression>(dst_column, walk_alias)));
+		// A LABEL ON A QUANTIFIED HOP CONSTRAINS EVERY STEP.
+		//
+		// One condition in the recursive term is applied on every iteration, which
+		// is what "every step" means here — so `-[t:transfer]->{1,3}` is three
+		// transfers, not a path whose first edge happens to be one. The length-0
+		// base term traverses no edge and carries no filter, which is right:
+		// there is no edge for the label to describe.
+		if (!edge_label_column.empty() && !edge_label.empty()) {
+			step_conditions.push_back(BuildLabelFilter(step_edge_alias, edge_label_column, edge_label));
 		}
-
-		branch->where_clause = BuildConjunction(branch_conditions);
-		union_node->children.push_back(std::move(branch));
+		// The recursion terminates on length, not on the graph, so a cyclic graph
+		// cannot spin: every iteration increases `len`, and this stops it at the
+		// upper bound.
+		step_conditions.push_back(make_uniq<ComparisonExpression>(
+		    ExpressionType::COMPARE_LESSTHAN, make_uniq<ColumnRefExpression>(len_column, walk_alias),
+		    make_uniq<ConstantExpression>(Value::BIGINT(subpath->upper))));
+		step->where_clause = BuildConjunction(step_conditions);
 	}
 
-	auto union_select = make_uniq<SelectStatement>();
-	union_select->node = std::move(union_node);
-	auto union_inner_alias = path_alias + "_union";
-	auto union_subquery = make_uniq<SubqueryRef>(std::move(union_select));
-	union_subquery->alias = union_inner_alias;
+	auto recursive_node = make_uniq<RecursiveCTENode>();
+	recursive_node->ctename = cte_name;
+	recursive_node->union_all = true;
+	recursive_node->left = std::move(base);
+	recursive_node->right = std::move(step);
+	recursive_node->aliases = {src_column, dst_column, len_column};
 
-	auto distinct_node = make_uniq<SelectNode>();
-	distinct_node->AddDistinct();
-	distinct_node->from_table = std::move(union_subquery);
-	for (idx_t key_idx = 0; key_idx < source_columns.size(); key_idx++) {
-		auto source_ref = make_uniq<ColumnRefExpression>(source_columns[key_idx], union_inner_alias);
-		source_ref->alias = source_columns[key_idx];
-		distinct_node->select_list.push_back(std::move(source_ref));
+	auto cte_select = make_uniq<SelectStatement>();
+	cte_select->node = std::move(recursive_node);
 
-		auto destination_ref = make_uniq<ColumnRefExpression>(destination_columns[key_idx], union_inner_alias);
-		destination_ref->alias = destination_columns[key_idx];
-		distinct_node->select_list.push_back(std::move(destination_ref));
+	auto cte_info = make_uniq<CommonTableExpressionInfo>();
+	cte_info->aliases = {src_column, dst_column, len_column};
+	cte_info->query = std::move(cte_select);
+
+	// --- the endpoint projection over the walk, bounded by length ----------------
+	auto endpoint_node = make_uniq<SelectNode>();
+	{
+		auto walk_ref = make_uniq<BaseTableRef>();
+		walk_ref->table_name = cte_name;
+		endpoint_node->from_table = std::move(walk_ref);
+		auto s = make_uniq<ColumnRefExpression>(src_column);
+		s->alias = src_column;
+		endpoint_node->select_list.push_back(std::move(s));
+		auto d = make_uniq<ColumnRefExpression>(dst_column);
+		d->alias = dst_column;
+		endpoint_node->select_list.push_back(std::move(d));
+
+		vector<unique_ptr<ParsedExpression>> bounds;
+		bounds.push_back(make_uniq<ComparisonExpression>(
+		    ExpressionType::COMPARE_GREATERTHANOREQUALTO, make_uniq<ColumnRefExpression>(len_column),
+		    make_uniq<ConstantExpression>(Value::BIGINT(subpath->lower))));
+		bounds.push_back(make_uniq<ComparisonExpression>(
+		    ExpressionType::COMPARE_LESSTHANOREQUALTO, make_uniq<ColumnRefExpression>(len_column),
+		    make_uniq<ConstantExpression>(Value::BIGINT(subpath->upper))));
+		endpoint_node->where_clause = BuildConjunction(bounds);
 	}
-	auto distinct_select = make_uniq<SelectStatement>();
-	distinct_select->node = std::move(distinct_node);
-	auto distinct_subquery = make_uniq<SubqueryRef>(std::move(distinct_select));
-	distinct_subquery->alias = path_alias;
-	CrossJoinTableRef(from_clause, std::move(distinct_subquery));
+	endpoint_node->cte_map.map[cte_name] = std::move(cte_info);
 
-	conditions.push_back(CreateMatchJoinExpression(edge_table->source_pk, source_columns, prev_binding, path_alias));
-	conditions.push_back(
-	    CreateMatchJoinExpression(edge_table->destination_pk, destination_columns, next_binding, path_alias));
+	auto endpoint_select = make_uniq<SelectStatement>();
+	endpoint_select->node = std::move(endpoint_node);
+	auto endpoint_subquery = make_uniq<SubqueryRef>(std::move(endpoint_select));
+	endpoint_subquery->alias = path_alias;
+	CrossJoinTableRef(from_clause, std::move(endpoint_subquery));
+
+	conditions.push_back(CreateMatchJoinExpression(edge_table->source_pk, vector<string> {src_column},
+	                                              prev_binding, path_alias));
+	conditions.push_back(CreateMatchJoinExpression(edge_table->destination_pk, vector<string> {dst_column},
+	                                              next_binding, path_alias));
+}
+
+//! The label as WRITTEN, or empty when the element carried none.
+//!
+//! An unlabelled element is given [PATTERN_UNLABELLED_VERTEX] or
+//! [PATTERN_UNLABELLED_EDGE] by the parser so the
+//! synthesized property graph can resolve it. Those reserved names must never
+//! reach a row filter, or every unlabelled pattern would compare its label
+//! column against a string no row holds and return nothing.
+static string WrittenLabel(const PathElement *element) {
+	if (!element || element->label == PATTERN_UNLABELLED_VERTEX || element->label == PATTERN_UNLABELLED_EDGE) {
+		return string();
+	}
+	return element->label;
 }
 
 void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path_list,
@@ -389,13 +617,137 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
                                         unique_ptr<SelectNode> &final_select_node,
                                         case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
                                         CreatePropertyGraphInfo &pg_table, int32_t &extra_alias_counter,
-                                        MatchExpression &original_ref) {
+                                        MatchExpression &original_ref, const string &vertex_label_column,
+                                        const string &edge_label_column) {
+	// A VARIABLE NAMES ONE ELEMENT. Reusing an edge variable was accepted and
+	// silently answered a different question.
+	//
+	// Both hops of `(a)-[e]->(b)-[e]->(c)` emitted joins against the same alias,
+	// so the conditions became `b.id = e.src AND b.id = e.dst` and the answer
+	// collapsed to self-loops only: measured, one row on a graph where distinct
+	// variables give four. With labels it produces contradictory filters on one
+	// alias and returns nothing. SQL/PGQ requires distinct element variables in a
+	// path pattern, and DFL's own lowering refuses this for the same reason, so
+	// the two agree rather than one silently answering.
+	//
+	// Collected before any join is emitted so the message names the cause rather
+	// than a consequence ("Table \"e\" does not have a column named ...").
+	{
+		case_insensitive_set_t vertex_names;
+		case_insensitive_set_t edge_names;
+		// Reuse is legal for a PLAIN, DIRECTED hop and refused otherwise, so the
+		// two cases are tracked apart. See the block below for why.
+		case_insensitive_set_t group_edge_names;
+		case_insensitive_set_t any_edge_names;
+		for (idx_t i = 0; i < path_list.size(); i++) {
+			bool is_quantified = false;
+			auto *element = GetPathElement(path_list[i]);
+			if (!element) {
+				auto *sub = GetSubPath(path_list[i]);
+				if (!sub || sub->path_list.empty()) {
+					continue;
+				}
+				element = GetPathElement(sub->path_list[0]);
+				if (!element) {
+					continue;
+				}
+				// A SubPath is a quantified hop: its edge is a GROUP variable.
+				is_quantified = true;
+			}
+			if (element->variable_binding.empty()) {
+				continue;
+			}
+			const auto is_vertex = element->match_type == PGQMatchType::MATCH_VERTEX;
+			auto &own = is_vertex ? vertex_names : edge_names;
+			auto &other = is_vertex ? edge_names : vertex_names;
+			if (other.find(element->variable_binding) != other.end()) {
+				throw BinderException("graph_match: '%s' names both a vertex and an edge in the same pattern; "
+				                      "give them different names",
+				                      element->variable_binding);
+			}
+			// A REPEATED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT ON A PLAIN,
+			// DIRECTED HOP - AND ONLY THERE.
+			//
+			// Oracle answers `(a)-[x]->(b)-[x]->(c)` as "both hops are the same
+			// edge": on a graph holding a self-loop `1->1` and an edge `1->2` it
+			// returns exactly one row, the self-loop, because that is the only
+			// edge whose destination is its own source. Written three times it
+			// still returns that one row, and on a two-vertex cycle with no
+			// self-loop it returns none. Joining both hops against ONE ALIAS is
+			// what expresses that, and this function already did it.
+			//
+			// But that alias only exists for a plain, directed hop:
+			//
+			// - a QUANTIFIED hop is lowered to its own recursive CTE, and its edge
+			//   binding never enters `alias_map` at all. The reused name would be
+			//   inert and the constraint would silently disappear - the query
+			//   would answer a DIFFERENT question and report nothing. Oracle
+			//   refuses these outright, and so does this: ORA-49001 when one
+			//   occurrence is quantified ("a singleton variable has the same name
+			//   as a group variable"), ORA-49002 when both are. The worst shape it
+			//   allowed was `(a)-[e:knows]->{1,2}(b)-[e:works]->(c)`, one edge
+			//   required to be two different labels, which answered 4 rows.
+			// - an UNDIRECTED hop is a cross-joined UNION ALL subquery aliased with
+			//   the edge binding and likewise absent from `alias_map`, so two of
+			//   them collide and DuckDB reports its own "Ambiguous reference to
+			//   table" - an internal message about generated SQL, for a pattern
+			//   the caller wrote. Oracle DOES answer this one, so refusing it is a
+			//   deliberate, narrow gap: a clear refusal beats a leaked alias error,
+			//   and expressing it needs distinct aliases plus an explicit same-edge
+			//   equality, which is a feature rather than a fix.
+			//
+			// An earlier revision deleted the refusal entirely, reasoning that the
+			// single-alias join expresses the constraint. That is true for a plain
+			// hop and false for the other two, and nothing here holds the two hops
+			// to being plain - so the deletion turned a wrong error into a wrong
+			// ANSWER for every quantified combination.
+			if (!is_vertex) {
+				const auto is_any = element->match_type == PGQMatchType::MATCH_EDGE_ANY;
+				const auto seen_plain = own.find(element->variable_binding) != own.end();
+				const auto seen_group = group_edge_names.find(element->variable_binding) != group_edge_names.end();
+				const auto seen_any = any_edge_names.find(element->variable_binding) != any_edge_names.end();
+				if (is_quantified && (seen_plain || seen_group || seen_any)) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused on a hop that carries a quantifier. A "
+					    "quantified hop matches a SET of edges, so it cannot also be the one edge another hop "
+					    "matched; Oracle refuses the same pattern (ORA-49001, or ORA-49002 when both hops are "
+					    "quantified). Give each hop its own name.",
+					    element->variable_binding);
+				}
+				if (!is_quantified && seen_group) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused, and one of its hops carries a quantifier. A "
+					    "quantified hop matches a SET of edges, so it cannot also be the one edge another hop "
+					    "matched; Oracle refuses the same pattern (ORA-49001). Give each hop its own name.",
+					    element->variable_binding);
+				}
+				if ((is_any && (seen_plain || seen_any)) || (!is_any && seen_any)) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused on an undirected hop `-[%s]-`. This lowering "
+					    "cannot express one edge shared by two undirected hops; write the direction you mean, or "
+					    "give each hop its own name.",
+					    element->variable_binding, element->variable_binding);
+				}
+				if (is_quantified) {
+					group_edge_names.insert(element->variable_binding);
+				} else if (is_any) {
+					any_edge_names.insert(element->variable_binding);
+				}
+			}
+			own.insert(element->variable_binding);
+		}
+	}
+
 	PathElement *previous_vertex_element = GetPathElement(path_list[0]);
 	if (!previous_vertex_element) {
 		throw NotImplementedException("graph_match: a path may not begin with a quantified subpath");
 	}
-	auto previous_vertex_table = FindGraphTable(previous_vertex_element->label, pg_table);
+	auto previous_vertex_table = ResolveByRole(/*is_vertex=*/true, pg_table);
 	alias_map[previous_vertex_element->variable_binding] = previous_vertex_table;
+	if (!vertex_label_column.empty() && !WrittenLabel(previous_vertex_element).empty()) {
+		conditions.push_back(BuildLabelFilter(previous_vertex_element->variable_binding, vertex_label_column,
+		                                      WrittenLabel(previous_vertex_element)));
+	}
 
 	for (idx_t idx_j = 1; idx_j < path_list.size(); idx_j = idx_j + 2) {
 		PathElement *next_vertex_element = GetPathElement(path_list[idx_j + 1]);
@@ -406,8 +758,12 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 		    previous_vertex_element->match_type != PGQMatchType::MATCH_VERTEX) {
 			throw BinderException("Vertex and edge patterns must be alternated.");
 		}
-		auto next_vertex_table = FindGraphTable(next_vertex_element->label, pg_table);
+		auto next_vertex_table = ResolveByRole(/*is_vertex=*/true, pg_table);
 		alias_map[next_vertex_element->variable_binding] = next_vertex_table;
+		if (!vertex_label_column.empty() && !WrittenLabel(next_vertex_element).empty()) {
+			conditions.push_back(BuildLabelFilter(next_vertex_element->variable_binding, vertex_label_column,
+			                                      WrittenLabel(next_vertex_element)));
+		}
 
 		PathElement *edge_element = GetPathElement(path_list[idx_j]);
 		if (!edge_element) {
@@ -417,13 +773,14 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 				throw NotImplementedException("graph_match: nested subpaths are not supported");
 			}
 			edge_element = GetPathElement(edge_subpath->path_list[0]);
-			auto edge_table = FindGraphTable(edge_element->label, pg_table);
+			auto edge_table = ResolveByRole(/*is_vertex=*/false, pg_table);
 
-			if (edge_subpath->upper > 1) {
+			if (BoundNeedsExpansion(*edge_subpath)) {
 				if (CanExpandBoundedSubpath(edge_table, edge_subpath, edge_element->match_type)) {
 					AddBoundedPathExpansion(edge_table, edge_subpath, previous_vertex_element->variable_binding,
 					                        edge_element->variable_binding, next_vertex_element->variable_binding,
-					                        conditions, final_select_node->from_table, extra_alias_counter);
+					                        conditions, final_select_node->from_table, extra_alias_counter,
+					                        WrittenLabel(edge_element), edge_label_column);
 				} else {
 					// TODO: wire the CSR/shortestpath route (AddPathFinding) for
 					// left/undirected or large-bound variable-length edges. The CSR
@@ -440,13 +797,21 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 				             edge_element->variable_binding, previous_vertex_element->variable_binding,
 				             next_vertex_element->variable_binding, conditions, alias_map, extra_alias_counter,
 				             final_select_node->from_table);
+				if (!edge_label_column.empty() && !WrittenLabel(edge_element).empty()) {
+					conditions.push_back(BuildLabelFilter(edge_element->variable_binding, edge_label_column,
+					                                      WrittenLabel(edge_element)));
+				}
 			}
 		} else {
-			auto edge_table = FindGraphTable(edge_element->label, pg_table);
+			auto edge_table = ResolveByRole(/*is_vertex=*/false, pg_table);
 			AddEdgeJoins(edge_table, previous_vertex_table, next_vertex_table, edge_element->match_type,
 			             edge_element->variable_binding, previous_vertex_element->variable_binding,
 			             next_vertex_element->variable_binding, conditions, alias_map, extra_alias_counter,
 			             final_select_node->from_table);
+			if (!edge_label_column.empty() && !WrittenLabel(edge_element).empty()) {
+				conditions.push_back(BuildLabelFilter(edge_element->variable_binding, edge_label_column,
+				                                      WrittenLabel(edge_element)));
+			}
 		}
 		previous_vertex_element = next_vertex_element;
 		previous_vertex_table = next_vertex_table;
@@ -460,6 +825,21 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &context,
                                                               TableFunctionBindInput &input) {
 	// graph_match(pattern, vertex_table, vertex_id, edge_table, src, dst)
+	//
+	// NULL IS REFUSED BEFORE IT REACHES `StringValue::Get`, for the same reason
+	// the named parameters below refuse it: that call throws InternalException on
+	// a NULL, which prints an assertion-failure banner and a stack trace, and in a
+	// build configured with CRASH_ON_ASSERT - which is how DuckDB's own CI builds -
+	// calls abort() and takes the process down. A value the caller typed must not
+	// be able to do that. The named parameters were guarded and these six were
+	// not, which left the stated invariant false on six of eight paths.
+	static constexpr const char *POSITIONAL_NAMES[] = {"pattern",    "vertex_table", "vertex_id",
+	                                                   "edge_table", "source_column", "destination_column"};
+	for (idx_t i = 0; i < 6; i++) {
+		if (input.inputs[i].IsNull()) {
+			throw BinderException("graph_match: %s must not be NULL", POSITIONAL_NAMES[i]);
+		}
+	}
 	auto pattern = StringValue::Get(input.inputs[0]);
 	auto vertex_table = StringUtil::Lower(StringValue::Get(input.inputs[1]));
 	auto vertex_id = StringUtil::Lower(StringValue::Get(input.inputs[2]));
@@ -468,38 +848,163 @@ unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &co
 	auto dst_col = StringUtil::Lower(StringValue::Get(input.inputs[5]));
 	(void)context;
 
+	// The columns a written label is compared against. Named parameters, so a
+	// caller that writes no labels needs no change, and a caller that does write
+	// them says where they live rather than having them quietly ignored.
+	string vertex_label_column;
+	string edge_label_column;
+	for (auto &named : input.named_parameters) {
+		const auto is_vertex = StringUtil::CIEquals(named.first, "vertex_label_column");
+		const auto is_edge = StringUtil::CIEquals(named.first, "edge_label_column");
+		if (!is_vertex && !is_edge) {
+			continue;
+		}
+		// NULL IS A USER ERROR, NOT AN INTERNAL ONE.
+		//
+		// `StringValue::Get` on a NULL throws InternalException, which prints a
+		// stack trace and asks the user to file a bug — and in a build configured
+		// with CRASH_ON_ASSERT (which is how DuckDB's own CI builds) it calls
+		// abort() and takes the process down. A value the caller typed must not be
+		// able to do that.
+		if (named.second.IsNull()) {
+			throw BinderException("graph_match: %s must be a column name, not NULL", named.first);
+		}
+		auto value = StringUtil::Lower(StringValue::Get(named.second));
+		// EMPTY IS NOT ABSENT. Every test below is `column.empty()`, so an empty
+		// string silently selected the relation-name reading and then reported
+		// "no vertex_label_column was given" to a caller who had given one.
+		if (value.empty()) {
+			throw BinderException("graph_match: %s was given as an empty string; pass a column name, or omit it",
+			                      named.first);
+		}
+		if (is_vertex) {
+			vertex_label_column = std::move(value);
+		} else {
+			edge_label_column = std::move(value);
+		}
+	}
+
 	// 1. Parse the pattern string into a MatchExpression + the distinct labels.
 	vector<string> vertex_labels;
 	vector<string> edge_labels;
-	auto match_expr = ParseGraphPattern(pattern, vertex_labels, edge_labels);
+	vector<ParsedPatternLabel> label_refs;
+	auto match_expr = ParseGraphPattern(pattern, vertex_labels, edge_labels, label_refs);
 
-	if (edge_labels.size() != 1 || vertex_labels.size() != 1) {
-		throw NotImplementedException(
-		    "graph_match: exactly one vertex label and one edge label are supported per call "
-		    "(got %llu vertex / %llu edge labels); call once per distinct label pair",
-		    static_cast<unsigned long long>(vertex_labels.size()),
-		    static_cast<unsigned long long>(edge_labels.size()));
+	// A WRITTEN LABEL MUST MEAN SOMETHING. IT USED TO MEAN NOTHING.
+	//
+	// graph_match is handed one vertex table and one edge table, so a label never
+	// selects BETWEEN relations here. Previously that made every label
+	// self-fulfilling: it was used to look up the element's table, the lookup was
+	// keyed by the labels just parsed so it always succeeded, and no filter was
+	// ever emitted. Measured on a two-class fixture, `(a:zzz)-[x:qqq]->(b:zzz)` —
+	// labels present nowhere in the data — returned every edge in the graph.
+	//
+	// There are two honest readings of a label here, and which one applies depends
+	// on whether the caller said where labels live:
+	//
+	//   * A label COLUMN was named. The label is a row-level class, so it becomes
+	//     a filter (see ProcessPathList and AddBoundedPathExpansion). This is the
+	//     property-graph reading, and what a VKG caller wants.
+	//   * No label column was named. Then the only label this relation has is the
+	//     relation itself, so the label must NAME it — `(a:Student)` over the
+	//     `Student` vertex table. Anything else is refused rather than ignored.
+	//
+	// The second reading is what keeps `(a:Student)-[e:know]->(b:Student)` over
+	// tables `Student` / `know` working without a label column, while still
+	// refusing `(a:zzz)`.
+	// THE READING IS A PROPERTY OF THE CALL, NOT OF EACH ELEMENT KIND.
+	//
+	// This loop used to decide per element: a label whose own column was absent
+	// fell back to the relation-name rule independently of the other kind. In the
+	// ASYMMETRIC mode — one column given, the other not — that reintroduced
+	// exactly the silent ignore this whole change exists to remove. Measured on a
+	// three-person fixture with `knows` and `hates` edges in a table named
+	// `knows`:
+	//
+	//   graph_match('(a:person)-[e:knows]->(b:person)', 'person','id','knows',...,
+	//               vertex_label_column = 'kind')
+	//     -> 3 rows, two of them `hates` edges
+	//   ...with edge_label_column = 'kind' as well
+	//     -> 1 row
+	//
+	// Three constraints written, two applied, no diagnostic. The edge label
+	// `knows` happened to name the edge relation, so it was accepted under the
+	// other reading and no filter was emitted. The same switch fires in reverse:
+	// `(a)-[e:knows]->(b)` over a table named `knows` answers 5 rows without
+	// `edge_label_column` and 2 with it — one pattern, two answers, both quiet.
+	//
+	// So once EITHER column is supplied, labels are row values for the whole
+	// call, and a written label of the other kind without its column is refused
+	// rather than reinterpreted.
+	const auto any_label_column = !vertex_label_column.empty() || !edge_label_column.empty();
+	for (auto &ref : label_refs) {
+		const auto &column = ref.is_vertex ? vertex_label_column : edge_label_column;
+		if (!column.empty()) {
+			continue;
+		}
+		const auto *own_param = ref.is_vertex ? "vertex_label_column" : "edge_label_column";
+		const auto *other_param = ref.is_vertex ? "edge_label_column" : "vertex_label_column";
+		const auto *kind = ref.is_vertex ? "vertex" : "edge";
+		if (any_label_column) {
+			throw BinderException(
+			    "graph_match: the pattern writes the %s label '%s' on '%s', and %s was given, so labels are read "
+			    "as row values for this call — but no %s was given, and this label would be silently dropped. "
+			    "Pass %s := '<column>', or remove the label.",
+			    kind, ref.label, ref.binding, other_param, own_param, own_param);
+		}
+		const auto &relation = ref.is_vertex ? vertex_table : edge_table;
+		if (StringUtil::CIEquals(ref.label, relation)) {
+			continue;
+		}
+		throw BinderException(
+		    "graph_match: the pattern writes the %s label '%s' on '%s', but no %s was given and '%s' is not the "
+		    "name of the %s relation ('%s'). Either pass %s := '<column>' — the column holding each row's label, "
+		    "so the label can filter rows — or label the element after the relation it comes from.",
+		    kind, ref.label, ref.binding, own_param, ref.label, kind, relation, own_param);
 	}
 
 	// 2. Synthesize a CreatePropertyGraphInfo: one vertex table + one edge table,
 	//    populated exactly like MakeEdgeSpec, keyed by the parsed labels so
 	//    FindGraphTable resolves. Source and destination vertices are the same
 	//    vertex table; the CSR/join builders disambiguate via the bindings.
+	// `vertex_id` MUST BE UNIQUE PER ROW. Nothing here can check it cheaply, so it
+	// is stated instead. A duplicate id multiplies rows: it duplicates the
+	// endpoints of every match, and inside a quantified hop it multiplies again at
+	// each intermediate vertex. The old outer DISTINCT absorbed both effects, so
+	// this is a consequence of returning one row per walk. A denormalised source
+	// table or a view over one is the easy way to hit it.
 	auto edge_spec = MakeEdgeSpec(vertex_table, vertex_id, edge_table, src_col, dst_col);
-	edge_spec->main_label = edge_labels[0];
+	edge_spec->main_label = edge_labels.empty() ? string(PATTERN_UNLABELLED_EDGE) : edge_labels[0];
 
 	auto vertex_spec = make_shared_ptr<PropertyGraphTable>();
 	vertex_spec->table_name = vertex_table;
 	vertex_spec->is_vertex_table = true;
-	vertex_spec->main_label = vertex_labels[0];
+	vertex_spec->main_label = vertex_labels.empty() ? string(PATTERN_UNLABELLED_VERTEX) : vertex_labels[0];
 	vertex_spec->source_pk = {vertex_id};
 	vertex_spec->destination_pk = {vertex_id};
 
 	CreatePropertyGraphInfo pg_info("__graph_match");
 	pg_info.vertex_tables.push_back(vertex_spec);
 	pg_info.edge_tables.push_back(edge_spec);
-	pg_info.label_map[vertex_labels[0]] = vertex_spec;
-	pg_info.label_map[edge_labels[0]] = edge_spec;
+	// EVERY label in the pattern maps to the one table of its kind.
+	//
+	// There is exactly one vertex table and one edge table behind graph_match, so
+	// a label never selects BETWEEN tables here — it selects rows, which the
+	// filters in ProcessPathList now do. Registering every parsed label is what
+	// lifts the old "exactly one vertex label and one edge label per call"
+	// refusal: a cross-class pattern such as
+	// `(o:Order)-[e:placedBy]->(c:Customer)` is two vertex labels over one vertex
+	// relation, which Oracle answers and this refused outright.
+	// The label map is populated for the ported rewrite's benefit, but elements
+	// are NOT resolved through it — see `ResolveByRole`. A name used as both a
+	// vertex and an edge label therefore collides here harmlessly: whichever entry
+	// wins is never consulted.
+	for (auto &label : vertex_labels) {
+		pg_info.label_map[label] = vertex_spec;
+	}
+	for (auto &label : edge_labels) {
+		pg_info.label_map[label] = edge_spec;
+	}
 
 	// 3. Run the ported rewrite.
 	vector<unique_ptr<ParsedExpression>> conditions;
@@ -509,7 +1014,7 @@ unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &co
 
 	for (auto &path_pattern : match_expr->path_patterns) {
 		ProcessPathList(path_pattern->path_elements, conditions, final_select_node, alias_map, pg_info,
-		                extra_alias_counter, *match_expr);
+		                extra_alias_counter, *match_expr, vertex_label_column, edge_label_column);
 	}
 
 	// Cross-join all the vertex/edge relations encountered.
