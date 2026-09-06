@@ -533,12 +533,18 @@ SELECT * FROM graph_match('(a:cperson)-[e:knows]->(b:cperson)','cperson','id','k
 ----
 was given as an empty string
 
-# A VARIABLE NAMES ONE ELEMENT.
+# A REUSED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT ON A PLAIN DIRECTED HOP,
+# AND IS REFUSED ANYWHERE ELSE.
 #
-# Reusing an edge variable was accepted and answered a different question: both
-# hops emitted joins against the same alias, so the conditions became
-# `b.id = e.src AND b.id = e.dst` and the answer collapsed to self-loops only --
-# one row where distinct variables give four.
+# Both hops join against ONE alias, so the conditions become
+# `b.id = e.src AND b.id = e.dst` and the answer is the self-loops -- which is
+# the question the pattern asks, and what Oracle answers.
+#
+# That alias only exists for a plain directed hop. A quantified hop is lowered
+# to its own recursive CTE and an undirected hop to a cross-joined UNION ALL,
+# and neither registers its edge binding, so the constraint would silently
+# vanish (quantified) or collide (undirected). Oracle refuses the quantified
+# forms too: ORA-49001 when one hop is quantified, ORA-49002 when both are.
 statement ok
 CREATE TABLE rv(id BIGINT);
 INSERT INTO rv VALUES (1),(2),(3);
@@ -547,15 +553,97 @@ statement ok
 CREATE TABLE rl(src BIGINT, dst BIGINT);
 INSERT INTO rl VALUES (1,2),(2,3),(2,2);
 
-statement error
-SELECT * FROM graph_match('(a)-[e]->(b)-[e]->(c)','rv','id','rl','src','dst');
+# A REPEATED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT, and Oracle answers it.
+# `rl` holds 1->2, 2->3 and the self-loop 2->2, so the only edge whose
+# destination is its own source is 2->2 and that is the only match.
+query III
+SELECT a_id, b_id, c_id FROM graph_match('(a)-[e]->(b)-[e]->(c)','rv','id','rl','src','dst');
 ----
-appears on more than one hop
+2	2	2
 
 statement error
 SELECT * FROM graph_match('(e)-[e]->(b)','rv','id','rl','src','dst');
 ----
 names both a vertex and an edge
+
+# A REVERSED hop reuses the alias the same way, so it is legal too. Oracle
+# answers this with the same three rows.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->(b)<-[e]-(c)','rv','id','rl','src','dst');
+----
+3
+
+# Three plain hops on one edge: still only the self-loop.
+query I
+SELECT count(*) FROM graph_match('(a)-[e]->(b)-[e]->(c)-[e]->(d)','rv','id','rl','src','dst');
+----
+1
+
+# A QUANTIFIED hop cannot share an edge name. Its edge binding never enters the
+# alias map, so the constraint would be inert and the query would silently
+# answer a different question. Oracle: ORA-49001 / ORA-49002.
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)-[e]->{1,2}(c)','rv','id','rl','src','dst');
+----
+is reused on a hop that carries a quantifier
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->{1,2}(b)-[e]->(c)','rv','id','rl','src','dst');
+----
+one of its hops carries a quantifier
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->{1,2}(b)-[e]->{1,2}(c)','rv','id','rl','src','dst');
+----
+is reused on a hop that carries a quantifier
+
+# The worst shape the blanket permission allowed: one edge required to be two
+# different labels at once, which answered four rows. Its own edge table, because
+# the refusal must be what rejects this -- against a table with no label column a
+# missing-column error would pass this test for the wrong reason.
+statement ok
+CREATE TABLE rl_lbl(src BIGINT, dst BIGINT, lbl VARCHAR);
+
+statement ok
+INSERT INTO rl_lbl VALUES (1,2,'knows'),(2,3,'works'),(2,2,'knows');
+
+statement error
+SELECT * FROM graph_match('(a)-[e:knows]->{1,2}(b)-[e:works]->(c)','rv','id','rl_lbl','src','dst',
+                          edge_label_column = 'lbl');
+----
+carries a quantifier
+
+# An UNDIRECTED hop cannot share an edge name either. Two of them alias the same
+# generated subquery, and DuckDB reported its own "Ambiguous reference to table"
+# for a pattern the caller wrote. Oracle does answer this one, so the refusal is
+# a deliberate narrow gap with a clear message.
+statement error
+SELECT * FROM graph_match('(a)-[e]-(b)-[e]-(c)','rv','id','rl','src','dst');
+----
+is reused on an undirected hop
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)-[e]-(c)','rv','id','rl','src','dst');
+----
+is reused on an undirected hop
+
+# EVERY POSITIONAL ARGUMENT REFUSES NULL. `StringValue::Get` on a NULL throws an
+# internal assertion failure, and a CRASH_ON_ASSERT build -- how DuckDB's own CI
+# builds -- turns that into abort(). A value the caller typed must not do that.
+statement error
+SELECT * FROM graph_match(NULL,'rv','id','rl','src','dst');
+----
+pattern must not be NULL
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)',NULL,'id','rl','src','dst');
+----
+vertex_table must not be NULL
+
+statement error
+SELECT * FROM graph_match('(a)-[e]->(b)','rv','id','rl','src',NULL);
+----
+destination_column must not be NULL
 
 # CONTROL: distinct edge variables give the four two-hop walks.
 query I
@@ -563,8 +651,8 @@ SELECT count(*) FROM graph_match('(a)-[e1]->(b)-[e2]->(c)','rv','id','rl','src',
 ----
 4
 
-# CONTROL: a repeated VERTEX variable is a cycle and stays legal -- only edge
-# variables are refused. Here the only closed two-hop walk is 2->2->2.
+# CONTROL: a repeated VERTEX variable is a cycle and stays legal. Here the only
+# closed two-hop walk is 2->2->2.
 query I
 SELECT count(*) FROM graph_match('(a)-[e1]->(b)-[e2]->(a)','rv','id','rl','src','dst');
 ----

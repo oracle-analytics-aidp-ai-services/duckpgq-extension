@@ -61,6 +61,21 @@ namespace {
 //! DISTINCT capped output at the number of distinct endpoint pairs; that
 //! DISTINCT is gone by design, and this constant did not become a replacement
 //! for it. A caller that needs a row bound needs its own LIMIT.
+//!
+//! SO THE PATTERN ARGUMENT IS TRUSTED INPUT. Treat it as such: a 21-character
+//! pattern can ask for more work than the process will ever finish. Measured on
+//! a complete digraph of 8 vertices and 56 edges, `{9,9}` returns 322,828,856
+//! rows in about 16 seconds, and `{16,16}` asks for roughly 2.7e14 - it does not
+//! return, and there is no cost estimate, row cap, or timeout in this path to
+//! stop it. `count(*)` does not help, because the recursive CTE materialises the
+//! walks before they are counted.
+//!
+//! Those counts are CORRECT for walk semantics, which is the point: this is not
+//! an expansion bug to fix but a property of answering "one row per walk", and
+//! the reference target grows the same way. It is recorded here because a caller
+//! that accepts a pattern string from somewhere less trusted than its own source
+//! code is exposing the database process to it, and nothing below this line will
+//! warn them.
 constexpr int64_t MAX_BOUNDED_PATH_EXPANSION_UPPER = 16;
 
 unique_ptr<ParsedExpression> BuildConjunction(vector<unique_ptr<ParsedExpression>> &conditions) {
@@ -620,7 +635,12 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 	{
 		case_insensitive_set_t vertex_names;
 		case_insensitive_set_t edge_names;
+		// Reuse is legal for a PLAIN, DIRECTED hop and refused otherwise, so the
+		// two cases are tracked apart. See the block below for why.
+		case_insensitive_set_t group_edge_names;
+		case_insensitive_set_t any_edge_names;
 		for (idx_t i = 0; i < path_list.size(); i++) {
+			bool is_quantified = false;
 			auto *element = GetPathElement(path_list[i]);
 			if (!element) {
 				auto *sub = GetSubPath(path_list[i]);
@@ -631,6 +651,8 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 				if (!element) {
 					continue;
 				}
+				// A SubPath is a quantified hop: its edge is a GROUP variable.
+				is_quantified = true;
 			}
 			if (element->variable_binding.empty()) {
 				continue;
@@ -643,16 +665,76 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 				                      "give them different names",
 				                      element->variable_binding);
 			}
-			// A repeated VERTEX variable is a cycle and is legal; a repeated EDGE
-			// variable is not, because one edge cannot be two hops.
-			if (!is_vertex && !own.insert(element->variable_binding).second) {
-				throw BinderException("graph_match: edge variable '%s' appears on more than one hop; one edge "
-				                      "cannot be two hops, so give each hop its own name",
-				                      element->variable_binding);
+			// A REPEATED EDGE VARIABLE IS A SAME-EDGE CONSTRAINT ON A PLAIN,
+			// DIRECTED HOP - AND ONLY THERE.
+			//
+			// Oracle answers `(a)-[x]->(b)-[x]->(c)` as "both hops are the same
+			// edge": on a graph holding a self-loop `1->1` and an edge `1->2` it
+			// returns exactly one row, the self-loop, because that is the only
+			// edge whose destination is its own source. Written three times it
+			// still returns that one row, and on a two-vertex cycle with no
+			// self-loop it returns none. Joining both hops against ONE ALIAS is
+			// what expresses that, and this function already did it.
+			//
+			// But that alias only exists for a plain, directed hop:
+			//
+			// - a QUANTIFIED hop is lowered to its own recursive CTE, and its edge
+			//   binding never enters `alias_map` at all. The reused name would be
+			//   inert and the constraint would silently disappear - the query
+			//   would answer a DIFFERENT question and report nothing. Oracle
+			//   refuses these outright, and so does this: ORA-49001 when one
+			//   occurrence is quantified ("a singleton variable has the same name
+			//   as a group variable"), ORA-49002 when both are. The worst shape it
+			//   allowed was `(a)-[e:knows]->{1,2}(b)-[e:works]->(c)`, one edge
+			//   required to be two different labels, which answered 4 rows.
+			// - an UNDIRECTED hop is a cross-joined UNION ALL subquery aliased with
+			//   the edge binding and likewise absent from `alias_map`, so two of
+			//   them collide and DuckDB reports its own "Ambiguous reference to
+			//   table" - an internal message about generated SQL, for a pattern
+			//   the caller wrote. Oracle DOES answer this one, so refusing it is a
+			//   deliberate, narrow gap: a clear refusal beats a leaked alias error,
+			//   and expressing it needs distinct aliases plus an explicit same-edge
+			//   equality, which is a feature rather than a fix.
+			//
+			// An earlier revision deleted the refusal entirely, reasoning that the
+			// single-alias join expresses the constraint. That is true for a plain
+			// hop and false for the other two, and nothing here holds the two hops
+			// to being plain - so the deletion turned a wrong error into a wrong
+			// ANSWER for every quantified combination.
+			if (!is_vertex) {
+				const auto is_any = element->match_type == PGQMatchType::MATCH_EDGE_ANY;
+				const auto seen_plain = own.find(element->variable_binding) != own.end();
+				const auto seen_group = group_edge_names.find(element->variable_binding) != group_edge_names.end();
+				const auto seen_any = any_edge_names.find(element->variable_binding) != any_edge_names.end();
+				if (is_quantified && (seen_plain || seen_group || seen_any)) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused on a hop that carries a quantifier. A "
+					    "quantified hop matches a SET of edges, so it cannot also be the one edge another hop "
+					    "matched; Oracle refuses the same pattern (ORA-49001, or ORA-49002 when both hops are "
+					    "quantified). Give each hop its own name.",
+					    element->variable_binding);
+				}
+				if (!is_quantified && seen_group) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused, and one of its hops carries a quantifier. A "
+					    "quantified hop matches a SET of edges, so it cannot also be the one edge another hop "
+					    "matched; Oracle refuses the same pattern (ORA-49001). Give each hop its own name.",
+					    element->variable_binding);
+				}
+				if ((is_any && (seen_plain || seen_any)) || (!is_any && seen_any)) {
+					throw BinderException(
+					    "graph_match: edge variable '%s' is reused on an undirected hop `-[%s]-`. This lowering "
+					    "cannot express one edge shared by two undirected hops; write the direction you mean, or "
+					    "give each hop its own name.",
+					    element->variable_binding, element->variable_binding);
+				}
+				if (is_quantified) {
+					group_edge_names.insert(element->variable_binding);
+				} else if (is_any) {
+					any_edge_names.insert(element->variable_binding);
+				}
 			}
-			if (is_vertex) {
-				own.insert(element->variable_binding);
-			}
+			own.insert(element->variable_binding);
 		}
 	}
 
@@ -743,6 +825,21 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &context,
                                                               TableFunctionBindInput &input) {
 	// graph_match(pattern, vertex_table, vertex_id, edge_table, src, dst)
+	//
+	// NULL IS REFUSED BEFORE IT REACHES `StringValue::Get`, for the same reason
+	// the named parameters below refuse it: that call throws InternalException on
+	// a NULL, which prints an assertion-failure banner and a stack trace, and in a
+	// build configured with CRASH_ON_ASSERT - which is how DuckDB's own CI builds -
+	// calls abort() and takes the process down. A value the caller typed must not
+	// be able to do that. The named parameters were guarded and these six were
+	// not, which left the stated invariant false on six of eight paths.
+	static constexpr const char *POSITIONAL_NAMES[] = {"pattern",    "vertex_table", "vertex_id",
+	                                                   "edge_table", "source_column", "destination_column"};
+	for (idx_t i = 0; i < 6; i++) {
+		if (input.inputs[i].IsNull()) {
+			throw BinderException("graph_match: %s must not be NULL", POSITIONAL_NAMES[i]);
+		}
+	}
 	auto pattern = StringValue::Get(input.inputs[0]);
 	auto vertex_table = StringUtil::Lower(StringValue::Get(input.inputs[1]));
 	auto vertex_id = StringUtil::Lower(StringValue::Get(input.inputs[2]));
