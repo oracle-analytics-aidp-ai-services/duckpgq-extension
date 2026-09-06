@@ -11,6 +11,8 @@
 
 #include "duckpgq/core/parser/pattern_parser.hpp"
 
+#include "duckdb/common/string_util.hpp"
+
 #include "duckdb/common/exception/parser_exception.hpp"
 #include "duckdb/parser/path_element.hpp"
 #include "duckdb/parser/subpath_element.hpp"
@@ -27,9 +29,11 @@ public:
 	explicit PatternParser(const string &pattern) : src(pattern), pos(0) {
 	}
 
-	unique_ptr<MatchExpression> Parse(vector<string> &out_vertex_labels, vector<string> &out_edge_labels) {
+	unique_ptr<MatchExpression> Parse(vector<string> &out_vertex_labels, vector<string> &out_edge_labels,
+	                                  vector<ParsedPatternLabel> &out_label_refs) {
 		auto match_expr = make_uniq<MatchExpression>();
 		auto path_pattern = make_uniq<PathPattern>();
+		label_refs = &out_label_refs;
 
 		// pattern := node (edge node)*
 		path_pattern->path_elements.push_back(ParseNode(out_vertex_labels));
@@ -47,6 +51,31 @@ public:
 private:
 	const string &src;
 	idx_t pos;
+	//! Every WRITTEN label, tied to its variable, for the caller's row filters.
+	vector<ParsedPatternLabel> *label_refs = nullptr;
+
+	//! Record a written label, and refuse the reserved internal one.
+	//!
+	//! The reserved name is what an unlabelled element is given so the
+	//! synthesized property graph can still resolve it. If an author could write
+	//! it too, their element would be indistinguishable from an unlabelled one
+	//! and would silently lose its filter — the exact failure this whole change
+	//! removes — so writing it is an error rather than a coincidence.
+	void RecordLabel(const string &binding, const string &label, bool is_vertex) {
+		if (label.empty()) {
+			return;
+		}
+		// Compared case-INSENSITIVELY, matching every other label comparison in
+		// this feature (`label_map` is a case-insensitive map, and the
+		// relation-name rule uses StringUtil::CIEquals). A case-sensitive test let
+		// `(a:__DUCKPGQ_UNLABELLED_EDGE)` past this guard and surface later as a
+		// confusing message about an unrelated rule.
+		if (StringUtil::CIEquals(label, PATTERN_UNLABELLED_VERTEX) ||
+		    StringUtil::CIEquals(label, PATTERN_UNLABELLED_EDGE)) {
+			Fail("label '" + label + "' is reserved for internal use; choose another label");
+		}
+		label_refs->push_back(ParsedPatternLabel {binding, label, is_vertex});
+	}
 
 	bool AtEnd() const {
 		return pos >= src.size();
@@ -119,15 +148,18 @@ private:
 		string variable = ParseVarAndLabel(label);
 		Expect(')', "expected ')' to close a vertex pattern");
 
-		if (label.empty()) {
-			Fail("vertex pattern '" + variable + "' is missing a label (use (var:Label))");
-		}
+		// A missing label is legal. SQL/PGQ and Oracle both accept `(a)`, and DFL
+		// emits that spelling, so requiring one made a correct pattern a parse
+		// error. The reserved label stands in so the synthesized property graph
+		// resolves the element; no filter is emitted for it.
+		RecordLabel(variable, label, /*is_vertex=*/true);
+		const auto resolved_label = label.empty() ? string(PATTERN_UNLABELLED_VERTEX) : label;
 
 		auto element = make_uniq<PathElement>(PGQPathReferenceType::PATH_ELEMENT);
 		element->match_type = PGQMatchType::MATCH_VERTEX;
 		element->variable_binding = variable;
-		element->label = label;
-		out_vertex_labels.push_back(label);
+		element->label = resolved_label;
+		out_vertex_labels.push_back(resolved_label);
 		return std::move(element);
 	}
 
@@ -154,10 +186,6 @@ private:
 		string label;
 		string variable = ParseVarAndLabel(label);
 		Expect(']', "expected ']' to close the edge body");
-
-		if (label.empty()) {
-			Fail("edge pattern '" + variable + "' is missing a label (use -[var:Label]->)");
-		}
 
 		SkipWhitespace();
 		bool right_arrow = false;
@@ -203,12 +231,14 @@ private:
 			}
 		}
 
-		out_edge_labels.push_back(label);
+		RecordLabel(variable, label, /*is_vertex=*/false);
+		const auto resolved_label = label.empty() ? string(PATTERN_UNLABELLED_EDGE) : label;
+		out_edge_labels.push_back(resolved_label);
 
 		auto element = make_uniq<PathElement>(PGQPathReferenceType::PATH_ELEMENT);
 		element->match_type = match_type;
 		element->variable_binding = variable;
-		element->label = label;
+		element->label = resolved_label;
 
 		if (!var_length) {
 			return std::move(element);
@@ -233,7 +263,18 @@ private:
 		while (!AtEnd() && std::isdigit(static_cast<unsigned char>(src[pos]))) {
 			pos++;
 		}
-		return std::stoll(src.substr(start, pos - start));
+		// `stoll` throws `std::out_of_range` on a number too large for int64, which
+		// escapes as `Invalid Error: stoll` and contradicts this parser's promise
+		// that anything malformed raises a specific ParserException. Caught so the
+		// bound gets the same treatment as every other bad input.
+		const auto digits = src.substr(start, pos - start);
+		try {
+			return std::stoll(digits);
+		} catch (const std::out_of_range &) {
+			Fail("quantifier bound '" + digits + "' is too large");
+		} catch (const std::invalid_argument &) {
+			Fail("quantifier bound '" + digits + "' is not a number");
+		}
 	}
 };
 
@@ -251,12 +292,17 @@ void Unique(vector<string> &labels) {
 
 } // namespace
 
+const char *const PATTERN_UNLABELLED_VERTEX = "__duckpgq_unlabelled_vertex";
+const char *const PATTERN_UNLABELLED_EDGE = "__duckpgq_unlabelled_edge";
+
 unique_ptr<MatchExpression> ParseGraphPattern(const string &pattern, vector<string> &out_vertex_labels,
-                                              vector<string> &out_edge_labels) {
+                                              vector<string> &out_edge_labels,
+                                              vector<ParsedPatternLabel> &out_label_refs) {
 	out_vertex_labels.clear();
 	out_edge_labels.clear();
+	out_label_refs.clear();
 	PatternParser parser(pattern);
-	auto result = parser.Parse(out_vertex_labels, out_edge_labels);
+	auto result = parser.Parse(out_vertex_labels, out_edge_labels, out_label_refs);
 	Unique(out_vertex_labels);
 	Unique(out_edge_labels);
 	return result;
