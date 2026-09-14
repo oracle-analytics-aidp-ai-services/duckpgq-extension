@@ -35,23 +35,16 @@ static void IterativeLengthFunction(DataChunk &args, ExpressionState &state, Vec
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.bind_info->Cast<IterativeLengthFunctionData>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "Need to initialize CSR before doing shortest path");
 
-	D_ASSERT(duckpgq_state->csr_list[info.csr_id]);
+	D_ASSERT(csr);
 
-	if (info.csr_id + 1 > duckpgq_state->csr_list.size()) {
-		throw ConstraintException("Invalid ID");
-	}
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("Need to initialize CSR before doing shortest path");
-	}
-
-	if (!csr_entry->second->initialized_v) {
+	if (!csr->initialized_v) {
 		throw ConstraintException("Need to initialize CSR before doing shortest path");
 	}
 	int64_t v_size = args.data[1].GetValue(0).GetValue<int64_t>();
-	int64_t *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	vector<int64_t> &e = duckpgq_state->csr_list[info.csr_id]->e;
+	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
+	vector<int64_t> &e = csr->e;
 
 	// get src and dst vectors for searches
 	auto &src = args.data[2];
@@ -139,7 +132,7 @@ static void IterativeLengthFunction(DataChunk &args, ExpressionState &state, Vec
 			}
 		}
 	}
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

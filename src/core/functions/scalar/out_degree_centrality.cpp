@@ -12,17 +12,14 @@ static void OutDegreeCentralityFunction(DataChunk &args, ExpressionState &state,
 	auto &info = func_expr.bind_info->Cast<OutDegreeCentralityFunctionData>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("CSR not found. Is the graph populated?");
-	}
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "CSR not found. Is the graph populated?");
 
-	if (!(csr_entry->second->initialized_v && csr_entry->second->initialized_e)) {
+	if (!(csr->initialized_v && csr->initialized_e)) {
 		throw ConstraintException("Need to initialize CSR before computing out-degree centrality.");
 	}
 
-	int64_t *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	size_t v_size = duckpgq_state->csr_list[info.csr_id]->vsize;
+	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
+	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "out_degree_centrality");
 
 	auto &src = args.data[1];
@@ -49,7 +46,7 @@ static void OutDegreeCentralityFunction(DataChunk &args, ExpressionState &state,
 		result_data[n] = v[src_node + 1] - v[src_node];
 	}
 
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

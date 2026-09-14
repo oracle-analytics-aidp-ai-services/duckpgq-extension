@@ -19,7 +19,7 @@ unique_ptr<FunctionData> EccentricityFunctionData::EccentricityBind(ClientContex
 
 	int32_t csr_id = ExpressionExecutor::EvaluateScalar(context, *arguments[0]).GetValue<int32_t>();
 	auto duckpgq_state = GetDuckPGQState(context);
-	duckpgq_state->csr_to_delete.insert(csr_id);
+	duckpgq_state->ScheduleDelete(csr_id);
 
 	return make_uniq<EccentricityFunctionData>(context, csr_id);
 }

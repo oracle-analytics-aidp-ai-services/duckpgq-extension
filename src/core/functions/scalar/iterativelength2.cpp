@@ -35,11 +35,12 @@ static void IterativeLength2Function(DataChunk &args, ExpressionState &state, Ve
 	auto &info = func_expr.bind_info->Cast<IterativeLengthFunctionData>();
 
 	auto duckpgq_state = GetDuckPGQState(info.context);
+	auto csr = duckpgq_state->GetCSR(info.csr_id);
 
-	D_ASSERT(duckpgq_state->csr_list[info.csr_id]);
+	D_ASSERT(csr);
 	int64_t v_size = args.data[1].GetValue(0).GetValue<int64_t>();
-	int64_t *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	vector<int64_t> &e = duckpgq_state->csr_list[info.csr_id]->e;
+	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
+	vector<int64_t> &e = csr->e;
 
 	// get src and dst vectors for searches
 	auto &src = args.data[2];
@@ -126,7 +127,7 @@ static void IterativeLength2Function(DataChunk &args, ExpressionState &state, Ve
 			}
 		}
 	}
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------
