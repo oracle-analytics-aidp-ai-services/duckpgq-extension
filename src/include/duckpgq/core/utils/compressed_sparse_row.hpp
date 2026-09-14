@@ -37,9 +37,11 @@ public:
 	vector<int64_t> w;
 	vector<double> w_double;
 
-	bool initialized_v = false;
-	bool initialized_e = false;
-	bool initialized_w = false;
+	// Publication flags cover allocation/initialization only. SQL dependency
+	// barriers still ensure all vertex/edge rows are written before algorithms run.
+	atomic<bool> initialized_v {false};
+	atomic<bool> initialized_e {false};
+	atomic<bool> initialized_w {false};
 
 	size_t vsize {};
 

@@ -12,18 +12,15 @@ static void InDegreeCentralityFunction(DataChunk &args, ExpressionState &state, 
 	auto &info = func_expr.bind_info->Cast<InDegreeCentralityFunctionData>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("CSR not found. Is the graph populated?");
-	}
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "CSR not found. Is the graph populated?");
 
-	if (!(csr_entry->second->initialized_v && csr_entry->second->initialized_e)) {
+	if (!(csr->initialized_v && csr->initialized_e)) {
 		throw ConstraintException("Need to initialize CSR before computing in-degree centrality.");
 	}
 
-	auto *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	vector<int64_t> &e = duckpgq_state->csr_list[info.csr_id]->e;
-	size_t v_size = duckpgq_state->csr_list[info.csr_id]->vsize;
+	auto *v = reinterpret_cast<int64_t *>(csr->v);
+	vector<int64_t> &e = csr->e;
+	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "in_degree_centrality");
 
 	// Compute the in-degrees once and cache the result. The CSR only stores
@@ -75,7 +72,7 @@ static void InDegreeCentralityFunction(DataChunk &args, ExpressionState &state, 
 		result_data[n] = info.indeg[src_node];
 	}
 
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

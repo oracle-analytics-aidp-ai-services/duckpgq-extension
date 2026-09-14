@@ -141,7 +141,8 @@ static void CheapestPathLengthFunction(DataChunk &args, ExpressionState &state, 
 	int64_t input_size = args.data[1].GetValue(0).GetValue<int64_t>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
-	CSR *csr = duckpgq_state->GetCSR(info.csr_id);
+	auto csr_owner = duckpgq_state->GetCSR(info.csr_id);
+	CSR *csr = csr_owner.get();
 	auto &src = args.data[2];
 
 	UnifiedVectorFormat vdata_src, vdata_target;
@@ -159,7 +160,7 @@ static void CheapestPathLengthFunction(DataChunk &args, ExpressionState &state, 
 		TemplatedBellmanFord<int64_t>(csr, args, input_size, result, vdata_src, src_data, vdata_target, target_data,
 		                              csr->w);
 	}
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 //------------------------------------------------------------------------------
 // Register functions

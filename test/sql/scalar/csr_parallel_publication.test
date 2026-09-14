@@ -1,0 +1,113 @@
+# name: test/sql/scalar/csr_parallel_publication.test
+# description: Parallel CSR publication and query-local cleanup preserve SCC populations
+# group: [scalar]
+
+require duckpgq
+
+# More than one vector/row group: CSR initialization may be entered by several
+# workers. This exercises the production SQL path; it is not a deterministic
+# scheduling proof of the publication race. The native ownership test checks
+# retained lifetimes separately; it does not force this scheduling interleaving.
+statement ok
+SET threads = 8;
+
+statement ok
+CREATE TABLE csr_parallel_vertices AS
+SELECT i, 'v' || CAST(i AS VARCHAR) AS id FROM range(120032) AS r(i);
+
+# Two 60000-vertex directed cycles, and 32 isolated vertices. Component labels
+# are implementation-dependent, so assert population and partition membership
+# rather than assuming a particular Tarjan label.
+statement ok
+CREATE TABLE csr_parallel_edges AS
+SELECT 'v' || CAST(i AS VARCHAR) AS src,
+       'v' || CAST(CASE WHEN i = 59999 THEN 0 WHEN i = 119999 THEN 60000 ELSE i + 1 END AS VARCHAR) AS dst
+FROM range(120000) AS r(i);
+
+statement ok
+CREATE TABLE csr_parallel_scc AS
+SELECT * FROM strongly_connected_component('csr_parallel_vertices', 'id', 'csr_parallel_edges', 'src', 'dst');
+
+query III
+SELECT count(*), count(DISTINCT id), count(DISTINCT componentId) FROM csr_parallel_scc;
+----
+120032	120032	34
+
+query II rowsort
+SELECT population, count(*) FROM
+ (SELECT componentId, count(*) AS population FROM csr_parallel_scc GROUP BY componentId)
+GROUP BY population;
+----
+1	32
+60000	2
+
+query II rowsort
+SELECT CASE WHEN v.i < 60000 THEN 0 WHEN v.i < 120000 THEN 1 ELSE 2 END AS population_group,
+       count(DISTINCT s.componentId)
+FROM csr_parallel_vertices v JOIN csr_parallel_scc s USING (id)
+GROUP BY population_group;
+----
+0	1
+1	1
+2	32
+
+# A second invocation on the same connection must acquire a fresh CSR after
+# QueryEnd has removed the first invocation's state, with identical membership.
+statement ok
+CREATE TABLE csr_parallel_scc_again AS
+SELECT * FROM strongly_connected_component('csr_parallel_vertices', 'id', 'csr_parallel_edges', 'src', 'dst');
+
+query III
+SELECT count(*), count(DISTINCT id), count(DISTINCT componentId) FROM csr_parallel_scc_again;
+----
+120032	120032	34
+
+query I
+SELECT count(*) FROM
+ (SELECT a.componentId FROM csr_parallel_scc a JOIN csr_parallel_scc_again b USING (id)
+  GROUP BY a.componentId HAVING count(DISTINCT b.componentId) <> 1);
+----
+0
+
+# Two algorithm invocations in one statement own distinct CSR registry entries.
+query II
+SELECT a.n, b.n FROM
+ (SELECT count(DISTINCT componentId) AS n FROM strongly_connected_component('csr_parallel_vertices', 'id', 'csr_parallel_edges', 'src', 'dst')) a,
+ (SELECT count(DISTINCT componentId) AS n FROM weakly_connected_component('csr_parallel_vertices', 'id', 'csr_parallel_edges', 'src', 'dst')) b;
+----
+34	34
+
+# Exercise both weight allocation paths. The MATERIALIZED vertex CTE and its
+# count are the same dependency barrier used by the production CSR SQL builder.
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90001, 2::BIGINT, src, cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 0::BIGINT)) v(src, cnt)
+)
+SELECT create_csr_edge(-90001, 2::BIGINT, 1::BIGINT, n, 0::BIGINT, 1::BIGINT, 0::BIGINT, 7::BIGINT) FROM vertices;
+----
+7
+
+query I
+SELECT csr_get_w_type(-90001);
+----
+1
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90002, 2::BIGINT, src, cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 0::BIGINT)) v(src, cnt)
+)
+SELECT create_csr_edge(-90002, 2::BIGINT, 1::BIGINT, n, 0::BIGINT, 1::BIGINT, 0::BIGINT, 7.5::DOUBLE) FROM vertices;
+----
+7
+
+query I
+SELECT csr_get_w_type(-90002);
+----
+2
+
+query II
+SELECT delete_csr(-90001), delete_csr(-90002);
+----
+true	true

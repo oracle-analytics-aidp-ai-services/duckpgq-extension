@@ -14,8 +14,9 @@ CheapestPathLengthFunctionData::CheapestPathLengthBind(ClientContext &context, S
 	auto duckpgq_state = GetDuckPGQState(context);
 
 	int32_t csr_id = ExpressionExecutor::EvaluateScalar(context, *arguments[0]).GetValue<int32_t>();
-	CSR *csr = duckpgq_state->GetCSR(csr_id);
-	duckpgq_state->csr_to_delete.insert(csr_id);
+	auto csr_owner = duckpgq_state->GetCSR(csr_id);
+	CSR *csr = csr_owner.get();
+	duckpgq_state->ScheduleDelete(csr_id);
 
 	if (!(csr->initialized_v && csr->initialized_e && csr->initialized_w)) {
 		throw ConstraintException("Need to initialize CSR before doing cheapest path");

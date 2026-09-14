@@ -71,6 +71,8 @@ bool CSRFunctionData::Equals(const FunctionData &other_p) const {
 
 unique_ptr<FunctionData> CSRFunctionData::CSRVertexBind(ClientContext &context, ScalarFunction &bound_function,
                                                         vector<unique_ptr<Expression>> &arguments) {
+	// Initialize per-client state during binding, before parallel scalar workers.
+	GetDuckPGQState(context);
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}
@@ -85,6 +87,7 @@ unique_ptr<FunctionData> CSRFunctionData::CSRVertexBind(ClientContext &context, 
 
 unique_ptr<FunctionData> CSRFunctionData::CSREdgeBind(ClientContext &context, ScalarFunction &bound_function,
                                                       vector<unique_ptr<Expression>> &arguments) {
+	GetDuckPGQState(context);
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}
@@ -98,6 +101,7 @@ unique_ptr<FunctionData> CSRFunctionData::CSREdgeBind(ClientContext &context, Sc
 
 unique_ptr<FunctionData> CSRFunctionData::CSRBind(ClientContext &context, ScalarFunction &bound_function,
                                                   vector<unique_ptr<Expression>> &arguments) {
+	GetDuckPGQState(context);
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

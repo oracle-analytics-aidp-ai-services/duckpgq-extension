@@ -13,17 +13,14 @@ static void JaccardSimilarityFunction(DataChunk &args, ExpressionState &state, V
 	auto &info = func_expr.bind_info->Cast<JaccardSimilarityFunctionData>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("CSR not found. Is the graph populated?");
-	}
-	if (!(csr_entry->second->initialized_v && csr_entry->second->initialized_e)) {
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "CSR not found. Is the graph populated?");
+	if (!(csr->initialized_v && csr->initialized_e)) {
 		throw ConstraintException("Need to initialize CSR before computing jaccard similarity.");
 	}
 
-	int64_t *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	vector<int64_t> &e = duckpgq_state->csr_list[info.csr_id]->e;
-	size_t v_size = duckpgq_state->csr_list[info.csr_id]->vsize;
+	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
+	vector<int64_t> &e = csr->e;
+	size_t v_size = csr->vsize;
 
 	UnifiedVectorFormat vdata_a, vdata_b;
 	args.data[1].ToUnifiedFormat(args.size(), vdata_a);
@@ -71,7 +68,7 @@ static void JaccardSimilarityFunction(DataChunk &args, ExpressionState &state, V
 		result_data[i] = (union_size > 0) ? static_cast<double>(intersection) / static_cast<double>(union_size) : 0.0;
 	}
 
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

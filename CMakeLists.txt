@@ -24,6 +24,15 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
 
+# Exercise the real registry ownership contract without requiring a specific
+# query-worker interleaving. Keep this out of extension-only distribution builds.
+if(BUILD_UNITTESTS AND NOT EMSCRIPTEN)
+  add_executable(duckpgq_csr_ownership_test test/native/csr_ownership.cpp
+                 src/duckpgq_state.cpp)
+  target_link_libraries(duckpgq_csr_ownership_test duckdb_static)
+  link_extension_libraries(duckpgq_csr_ownership_test "")
+endif()
+
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"

@@ -189,7 +189,8 @@ static void ReachabilityFunction(DataChunk &args, ExpressionState &state, Vector
 	auto result_data = FlatVector::GetData<bool>(result);
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
-	CSR *csr = duckpgq_state->GetCSR(info.csr_id);
+	auto csr_owner = duckpgq_state->GetCSR(info.csr_id);
+	CSR *csr = csr_owner.get();
 
 	while (result_size < args.size()) {
 		vector<std::bitset<LANE_LIMIT>> seen(input_size);
@@ -250,7 +251,7 @@ static void ReachabilityFunction(DataChunk &args, ExpressionState &state, Vector
 		}
 		result_size = result_size + curr_batch_size;
 	}
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

@@ -18,10 +18,18 @@ public:
 	explicit DuckPGQState() {};
 
 	void QueryEnd() override;
-	CSR *GetCSR(int32_t id);
+	shared_ptr<CSR> GetCSR(int32_t id, const char *missing_message = nullptr);
+	shared_ptr<CSR> InitializeVertex(int32_t id, int64_t vertex_count);
+	shared_ptr<CSR> InitializeEdges(int32_t id, int64_t vertex_count, int64_t edge_count);
+	shared_ptr<CSR> InitializeWeights(int32_t id, int64_t edge_count, PhysicalType weight_type);
+	bool DeleteCSR(int32_t id);
+	void ScheduleDelete(int32_t id);
 
+
+private:
+	shared_ptr<CSR> GetCSRLocked(int32_t id, const char *missing_message = nullptr);
 	//! CSR data structures built for graph-algorithm / path-finding queries
-	std::unordered_map<int32_t, unique_ptr<CSR>> csr_list;
+	std::unordered_map<int32_t, shared_ptr<CSR>> csr_list;
 	std::mutex csr_lock;
 	std::unordered_set<int32_t> csr_to_delete;
 };

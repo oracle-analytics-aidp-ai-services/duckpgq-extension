@@ -14,18 +14,15 @@ static void SingleSourceShortestPathFunction(DataChunk &args, ExpressionState &s
 	auto duckpgq_state = GetDuckPGQState(info.context);
 
 	// Locate the CSR representation of the graph
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("CSR not found. Is the graph populated?");
-	}
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "CSR not found. Is the graph populated?");
 
-	if (!(csr_entry->second->initialized_v && csr_entry->second->initialized_e)) {
+	if (!(csr->initialized_v && csr->initialized_e)) {
 		throw ConstraintException("Need to initialize CSR before computing single source shortest path.");
 	}
 
-	auto *v = reinterpret_cast<int64_t *>(duckpgq_state->csr_list[info.csr_id]->v);
-	vector<int64_t> &e = duckpgq_state->csr_list[info.csr_id]->e;
-	size_t v_size = duckpgq_state->csr_list[info.csr_id]->vsize;
+	auto *v = reinterpret_cast<int64_t *>(csr->v);
+	vector<int64_t> &e = csr->e;
+	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 2, "single_source_shortest_path");
 
 	// Compute the BFS hop distances from the source once and cache the result.
@@ -87,7 +84,7 @@ static void SingleSourceShortestPathFunction(DataChunk &args, ExpressionState &s
 		result_data[i] = info.dist[node_id];
 	}
 
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------

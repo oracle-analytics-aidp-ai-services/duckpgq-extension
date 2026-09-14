@@ -44,14 +44,9 @@ static void ShortestPathFunction(DataChunk &args, ExpressionState &state, Vector
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.bind_info->Cast<IterativeLengthFunctionData>();
 	auto duckpgq_state = GetDuckPGQState(info.context);
+	auto csr = duckpgq_state->GetCSR(info.csr_id, "Invalid ID");
 
-	D_ASSERT(duckpgq_state->csr_list[info.csr_id]);
-	auto csr_entry = duckpgq_state->csr_list.find(info.csr_id);
-	if (csr_entry == duckpgq_state->csr_list.end()) {
-		throw ConstraintException("Invalid ID");
-	}
-	auto &csr = csr_entry->second;
-
+	D_ASSERT(csr);
 	if (!csr->initialized_v) {
 		throw ConstraintException("Need to initialize CSR before doing shortest path");
 	}
@@ -203,7 +198,7 @@ static void ShortestPathFunction(DataChunk &args, ExpressionState &state, Vector
 			total_len += result_data[search_num].length;
 		}
 	}
-	duckpgq_state->csr_to_delete.insert(info.csr_id);
+	duckpgq_state->ScheduleDelete(info.csr_id);
 }
 
 //------------------------------------------------------------------------------
