@@ -24,6 +24,7 @@ static void StronglyConnectedComponentFunction(DataChunk &args, ExpressionState 
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 7, "strongly_connected_component");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute the strongly connected components once and cache the result.
 	if (!info.state_initialized) {
@@ -150,10 +151,9 @@ static void StronglyConnectedComponentFunction(DataChunk &args, ExpressionState 
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterStronglyConnectedComponentScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(
-	    ScalarFunction("strongly_connected_component", {LogicalType::INTEGER, LogicalType::BIGINT}, LogicalType::BIGINT,
-	                   StronglyConnectedComponentFunction,
-	                   StronglyConnectedComponentFunctionData::StronglyConnectedComponentBind));
+	loader.RegisterFunction(ScalarFunction("strongly_connected_component", {LogicalType::INTEGER, LogicalType::BIGINT},
+	                                       LogicalType::BIGINT, StronglyConnectedComponentFunction,
+	                                       StronglyConnectedComponentFunctionData::StronglyConnectedComponentBind));
 }
 
 } // namespace duckdb

@@ -15,10 +15,8 @@ StronglyConnectedComponentFunctionData::StronglyConnectedComponentFunctionData(C
     : context(ctx), csr_id(csr), component(component_p), state_initialized(false) {
 }
 
-unique_ptr<FunctionData>
-StronglyConnectedComponentFunctionData::StronglyConnectedComponentBind(ClientContext &context,
-                                                                       ScalarFunction &bound_function,
-                                                                       vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> StronglyConnectedComponentFunctionData::StronglyConnectedComponentBind(
+    ClientContext &context, ScalarFunction &bound_function, vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

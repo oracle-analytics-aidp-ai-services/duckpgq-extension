@@ -19,12 +19,15 @@ public:
 
 	void QueryEnd() override;
 	shared_ptr<CSR> GetCSR(int32_t id, const char *missing_message = nullptr);
+	void FinalizeCSRForRead(int32_t id, const shared_ptr<CSR> &owner, ClientContext &context);
+	void ScheduleDeleteIfOwned(int32_t id, const shared_ptr<CSR> &owner);
 	shared_ptr<CSR> InitializeVertex(int32_t id, int64_t vertex_count);
-	shared_ptr<CSR> InitializeEdges(int32_t id, int64_t vertex_count, int64_t edge_count);
-	shared_ptr<CSR> InitializeWeights(int32_t id, int64_t edge_count, PhysicalType weight_type);
+	shared_ptr<CSR> InitializeEdges(int32_t id, int64_t vertex_count, int64_t edge_count,
+	                                ClientContext *context = nullptr);
+	shared_ptr<CSR> InitializeWeights(int32_t id, int64_t edge_count, PhysicalType weight_type,
+	                                  ClientContext *context = nullptr);
 	bool DeleteCSR(int32_t id);
 	void ScheduleDelete(int32_t id);
-
 
 private:
 	shared_ptr<CSR> GetCSRLocked(int32_t id, const char *missing_message = nullptr);

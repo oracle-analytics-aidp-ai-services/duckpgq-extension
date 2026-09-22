@@ -14,9 +14,8 @@
 namespace duckdb {
 
 // Main binding function
-unique_ptr<TableRef>
-BetweennessCentralityFunction::BetweennessCentralityBindReplace(ClientContext &context,
-                                                                TableFunctionBindInput &input) {
+unique_ptr<TableRef> BetweennessCentralityFunction::BetweennessCentralityBindReplace(ClientContext &context,
+                                                                                     TableFunctionBindInput &input) {
 	auto vertex_table = StringUtil::Lower(StringValue::Get(input.inputs[0]));
 	auto vertex_id = StringUtil::Lower(StringValue::Get(input.inputs[1]));
 	auto edge_table = StringUtil::Lower(StringValue::Get(input.inputs[2]));

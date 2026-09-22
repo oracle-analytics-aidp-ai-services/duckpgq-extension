@@ -23,6 +23,7 @@ static void LouvainFunction(DataChunk &args, ExpressionState &state, Vector &res
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 4, "louvain");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// State initialization and computation (only once). Both the resize/init
 	// and the computation run inside the lock because DuckDB shares bind data
@@ -90,9 +91,9 @@ static void LouvainFunction(DataChunk &args, ExpressionState &state, Vector &res
 						for (auto &entry : neighbor_weight) {
 							int64_t cand_comm = entry.first;
 							int64_t k_in = entry.second;
-							double gain = static_cast<double>(k_in) -
-							              static_cast<double>(k_u) *
-							                  static_cast<double>(comm_total_degree[cand_comm]) / two_m;
+							double gain =
+							    static_cast<double>(k_in) -
+							    static_cast<double>(k_u) * static_cast<double>(comm_total_degree[cand_comm]) / two_m;
 							if (gain > best_gain || (gain == best_gain && cand_comm < best_comm)) {
 								best_gain = gain;
 								best_comm = cand_comm;

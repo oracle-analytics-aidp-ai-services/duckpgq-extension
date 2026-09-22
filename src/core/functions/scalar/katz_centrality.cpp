@@ -26,6 +26,7 @@ static void KatzCentralityFunction(DataChunk &args, ExpressionState &state, Vect
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 2, "katz_centrality");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute once and cache. Initialization AND computation must run under the
 	// lock: DuckDB parallelizes the scan and shares this bind data across threads,

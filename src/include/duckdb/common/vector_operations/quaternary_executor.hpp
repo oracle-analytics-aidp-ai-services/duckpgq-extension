@@ -18,7 +18,6 @@
 
 #include <functional>
 
-
 namespace duckdb {
 
 struct QuaternaryLambdaWrapper {

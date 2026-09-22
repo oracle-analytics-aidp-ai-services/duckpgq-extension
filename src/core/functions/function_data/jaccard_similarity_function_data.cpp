@@ -11,7 +11,7 @@ JaccardSimilarityFunctionData::JaccardSimilarityFunctionData(ClientContext &cont
 
 unique_ptr<FunctionData>
 JaccardSimilarityFunctionData::JaccardSimilarityBind(ClientContext &context, ScalarFunction &bound_function,
-                                                    vector<unique_ptr<Expression>> &arguments) {
+                                                     vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

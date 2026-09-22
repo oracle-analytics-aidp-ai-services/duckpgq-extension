@@ -11,9 +11,9 @@ KatzCentralityFunctionData::KatzCentralityFunctionData(ClientContext &ctx, int32
       iteration_count(0), state_initialized(false), converged(false) {
 }
 
-unique_ptr<FunctionData>
-KatzCentralityFunctionData::KatzCentralityBind(ClientContext &context, ScalarFunction &bound_function,
-                                              vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> KatzCentralityFunctionData::KatzCentralityBind(ClientContext &context,
+                                                                        ScalarFunction &bound_function,
+                                                                        vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

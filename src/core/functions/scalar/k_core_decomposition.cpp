@@ -23,6 +23,7 @@ static void KCoreDecompositionFunction(DataChunk &args, ExpressionState &state, 
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 3, "k_core_decomposition");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// State initialization and computation (only once)
 	if (!info.state_initialized) {

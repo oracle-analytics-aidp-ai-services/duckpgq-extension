@@ -1,0 +1,321 @@
+# name: test/sql/scalar/eigenvector_csr_neighbor_order.test
+# description: Exact eigenvector scores are independent of captured CSR neighbor order
+# group: [scalar]
+
+require duckpgq
+
+statement ok
+SET threads = 1;
+
+# These are two real captured CSR orders. Both have offsets
+# [0,6,10,13,15,18,19,20], seven real vertices and two native padding slots.
+# Each vertex row contains the same neighbor multiset. Only its order differs.
+# Existing creation scalars execute one row per statement, so no input sort or
+# planner-dependent vector order can change either captured sequence.
+
+# Captured order A: [5, 6, 1, 2, 3, 4, 4, 0, 2, 3, 1, 4, 0, 1, 0, 0, 1, 2, 0, 0]
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 0::BIGINT, 6::BIGINT);
+----
+6
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 1::BIGINT, 4::BIGINT);
+----
+4
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 2::BIGINT, 3::BIGINT);
+----
+3
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 3::BIGINT, 2::BIGINT);
+----
+2
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 4::BIGINT, 3::BIGINT);
+----
+3
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 5::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_vertex(-90131, 7::BIGINT, 6::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 5::BIGINT, 0::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 6::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 1::BIGINT, 2::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 2::BIGINT, 3::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 3::BIGINT, 4::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 4::BIGINT, 5::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 4::BIGINT, 6::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 0::BIGINT, 7::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 2::BIGINT, 8::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 3::BIGINT, 9::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 1::BIGINT, 10::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 4::BIGINT, 11::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 0::BIGINT, 12::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 3::BIGINT, 1::BIGINT, 13::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 3::BIGINT, 0::BIGINT, 14::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 0::BIGINT, 15::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 1::BIGINT, 16::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 2::BIGINT, 17::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 5::BIGINT, 0::BIGINT, 18::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90131, 7::BIGINT, 20::BIGINT, 20::BIGINT, 6::BIGINT, 0::BIGINT, 19::BIGINT);
+----
+1
+
+# Captured order B: [5, 6, 1, 2, 3, 4, 0, 2, 3, 4, 0, 1, 4, 0, 1, 0, 1, 2, 0, 0]
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 0::BIGINT, 6::BIGINT);
+----
+6
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 1::BIGINT, 4::BIGINT);
+----
+4
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 2::BIGINT, 3::BIGINT);
+----
+3
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 3::BIGINT, 2::BIGINT);
+----
+2
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 4::BIGINT, 3::BIGINT);
+----
+3
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 5::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_vertex(-90132, 7::BIGINT, 6::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 5::BIGINT, 0::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 6::BIGINT, 1::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 1::BIGINT, 2::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 2::BIGINT, 3::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 3::BIGINT, 4::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 0::BIGINT, 4::BIGINT, 5::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 0::BIGINT, 6::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 2::BIGINT, 7::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 3::BIGINT, 8::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 1::BIGINT, 4::BIGINT, 9::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 0::BIGINT, 10::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 1::BIGINT, 11::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 2::BIGINT, 4::BIGINT, 12::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 3::BIGINT, 0::BIGINT, 13::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 3::BIGINT, 1::BIGINT, 14::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 0::BIGINT, 15::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 1::BIGINT, 16::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 4::BIGINT, 2::BIGINT, 17::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 5::BIGINT, 0::BIGINT, 18::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90132, 7::BIGINT, 20::BIGINT, 20::BIGINT, 6::BIGINT, 0::BIGINT, 19::BIGINT);
+----
+1
+
+# Both columns execute the registered native scalar. QueryEnd then removes
+# both CSR owners; the materialized result retains only values.
+statement ok
+CREATE TEMP TABLE csr_eigen_order_result AS SELECT i AS vertex_id, eigenvector_centrality(-90131, i) AS score_a, eigenvector_centrality(-90132, i) AS score_b FROM range(7) r(i);
+
+query TTT
+SELECT typeof(vertex_id), typeof(score_a), typeof(score_b) FROM csr_eigen_order_result LIMIT 1;
+----
+BIGINT	DOUBLE	DOUBLE
+
+query I
+SELECT vertex_id FROM csr_eigen_order_result;
+----
+0
+1
+2
+3
+4
+5
+6
+
+query III
+SELECT count(*), count(DISTINCT vertex_id), count(*) FILTER (WHERE isfinite(score_a) AND isfinite(score_b) AND score_a > 0 AND score_b > 0) FROM csr_eigen_order_result;
+----
+7	7	7
+
+# Compare inside DuckDB, not SQLLogicTest's formatted floating tolerance.
+# For these finite positive doubles, exact inequality detects differing bits.
+query I
+SELECT count(*) FILTER (WHERE score_a IS DISTINCT FROM score_b) FROM csr_eigen_order_result;
+----
+0

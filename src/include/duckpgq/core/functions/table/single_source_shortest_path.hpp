@@ -15,8 +15,8 @@ public:
 	SingleSourceShortestPathFunction() {
 		name = "single_source_shortest_path";
 		// single_source_shortest_path(vertex_table, vertex_id_col, edge_table, src_col, dst_col, source_vertex)
-		arguments = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-		             LogicalType::VARCHAR, LogicalType::BIGINT};
+		arguments = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+		             LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
 		bind_replace = SingleSourceShortestPathBindReplace;
 	}
 
@@ -25,8 +25,7 @@ public:
 };
 
 struct SingleSourceShortestPathData : TableFunctionData {
-	static unique_ptr<FunctionData> SingleSourceShortestPathBind(ClientContext &context,
-	                                                             TableFunctionBindInput &input,
+	static unique_ptr<FunctionData> SingleSourceShortestPathBind(ClientContext &context, TableFunctionBindInput &input,
 	                                                             vector<LogicalType> &return_types,
 	                                                             vector<string> &names) {
 		auto result = make_uniq<SingleSourceShortestPathData>();

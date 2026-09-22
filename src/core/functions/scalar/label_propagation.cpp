@@ -25,6 +25,7 @@ static void LabelPropagationFunction(DataChunk &args, ExpressionState &state, Ve
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 2, "label_propagation");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// State initialization and computation (only once)
 	if (!info.state_initialized) {
@@ -37,10 +38,11 @@ static void LabelPropagationFunction(DataChunk &args, ExpressionState &state, Ve
 			}
 
 			vector<int64_t> newlabel(v_size, 0);
-			const int64_t max_iterations = 20; // heuristic: cap iterations (cf. Neo4j GDS default ~10) to bound runtime on large/near-regular graphs
+			const int64_t max_iterations = 20; // heuristic: cap iterations (cf. Neo4j GDS default ~10) to bound runtime
+			                                   // on large/near-regular graphs
 			for (int64_t iter = 0; iter < max_iterations; iter++) {
 				bool changed = false;
-					std::unordered_map<int64_t, int64_t> counts; // reused across vertices to avoid reallocation
+				std::unordered_map<int64_t, int64_t> counts; // reused across vertices to avoid reallocation
 				for (size_t u = 0; u + 2 < v_size; u++) {
 					auto start_edge = v[u];
 					auto end_edge = (u + 1 < v_size) ? v[u + 1] : static_cast<int64_t>(e.size());
@@ -63,8 +65,7 @@ static void LabelPropagationFunction(DataChunk &args, ExpressionState &state, Ve
 					int64_t best_label = info.label[u];
 					int64_t best_count = -1;
 					for (auto &entry : counts) {
-						if (entry.second > best_count ||
-						    (entry.second == best_count && entry.first < best_label)) {
+						if (entry.second > best_count || (entry.second == best_count && entry.first < best_label)) {
 							best_count = entry.second;
 							best_label = entry.first;
 						}

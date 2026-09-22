@@ -21,6 +21,7 @@ static void DegreeCentralityFunction(DataChunk &args, ExpressionState &state, Ve
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "degree_centrality");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	auto &src = args.data[1];
 	UnifiedVectorFormat vdata_src;

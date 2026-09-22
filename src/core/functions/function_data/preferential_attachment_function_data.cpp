@@ -11,7 +11,7 @@ PreferentialAttachmentFunctionData::PreferentialAttachmentFunctionData(ClientCon
 
 unique_ptr<FunctionData>
 PreferentialAttachmentFunctionData::PreferentialAttachmentBind(ClientContext &context, ScalarFunction &bound_function,
-                                                              vector<unique_ptr<Expression>> &arguments) {
+                                                               vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

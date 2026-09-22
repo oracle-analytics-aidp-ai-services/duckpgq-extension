@@ -15,10 +15,8 @@ SingleSourceShortestPathFunctionData::SingleSourceShortestPathFunctionData(Clien
     : context(ctx), csr_id(csr), dist(dist_p), state_initialized(false) {
 }
 
-unique_ptr<FunctionData>
-SingleSourceShortestPathFunctionData::SingleSourceShortestPathBind(ClientContext &context,
-                                                                   ScalarFunction &bound_function,
-                                                                   vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> SingleSourceShortestPathFunctionData::SingleSourceShortestPathBind(
+    ClientContext &context, ScalarFunction &bound_function, vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

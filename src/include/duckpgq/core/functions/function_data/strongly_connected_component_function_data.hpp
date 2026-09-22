@@ -21,9 +21,9 @@ struct StronglyConnectedComponentFunctionData final : FunctionData {
 
 	StronglyConnectedComponentFunctionData(ClientContext &context, int32_t csr_id);
 	StronglyConnectedComponentFunctionData(ClientContext &context, int32_t csr_id, const vector<int64_t> &component);
-	static unique_ptr<FunctionData>
-	StronglyConnectedComponentBind(ClientContext &context, ScalarFunction &bound_function,
-	                               vector<unique_ptr<Expression>> &arguments);
+	static unique_ptr<FunctionData> StronglyConnectedComponentBind(ClientContext &context,
+	                                                               ScalarFunction &bound_function,
+	                                                               vector<unique_ptr<Expression>> &arguments);
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;

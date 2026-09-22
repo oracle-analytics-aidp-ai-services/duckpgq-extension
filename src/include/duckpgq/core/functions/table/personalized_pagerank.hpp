@@ -15,8 +15,8 @@ public:
 	PersonalizedPageRankFunction() {
 		name = "personalized_pagerank";
 		// personalized_pagerank(vertex_table, vertex_id_col, edge_table, src_col, dst_col, source_vertex)
-		arguments = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-		             LogicalType::VARCHAR, LogicalType::BIGINT};
+		arguments = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+		             LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
 		bind_replace = PersonalizedPageRankBindReplace;
 	}
 

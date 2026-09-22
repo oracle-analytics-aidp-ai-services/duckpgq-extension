@@ -1,0 +1,305 @@
+# name: test/sql/scalar/direct_csr_computation.test
+# description: Direct CSR path scalars validate paired construction and preserve exact results
+# group: [scalar]
+
+require duckpgq
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE direct_csr_pairs(ord INTEGER, src BIGINT, dst BIGINT);
+INSERT INTO direct_csr_pairs VALUES (0,0,2),(1,2,0),(2,0,3),(3,1,1);
+
+# One unique undirected path 0--1--2 and isolated vertex 3.
+# Reverse neighbor insertion at vertex 1 must preserve original edge IDs.
+# No result sorting or normalization is used.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90201,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90201,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+query I
+SELECT create_csr_edge(-90201,4::BIGINT,4::BIGINT,4::BIGINT,0::BIGINT,1::BIGINT,10::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90201,4::BIGINT,4::BIGINT,4::BIGINT,2::BIGINT,1::BIGINT,21::BIGINT);
+----
+1
+
+query I
+SELECT create_csr_edge(-90201,4::BIGINT,4::BIGINT,4::BIGINT,1::BIGINT,0::BIGINT,11::BIGINT);
+----
+1
+
+statement ok
+CREATE TEMP TABLE direct_csr_unweighted AS
+SELECT ord,
+ iterativelength(-90201,4::BIGINT,src,dst) AS length_one,
+ iterativelength2(-90201,4::BIGINT,src,dst) AS length_two,
+ iterativelengthbidirectional(-90201,4::BIGINT,src,dst) AS length_bidirectional,
+ reachability(-90201,false,4::BIGINT,src,dst) AS reachable_plain,
+ reachability(-90201,true,4::BIGINT,src,dst) AS reachable_adaptive,
+ shortestpath(-90201,4::BIGINT,src,dst) AS path
+FROM direct_csr_pairs;
+
+query TTTTTT
+SELECT typeof(length_one),typeof(length_two),typeof(length_bidirectional),
+ typeof(reachable_plain),typeof(reachable_adaptive),typeof(path)
+FROM direct_csr_unweighted LIMIT 1;
+----
+BIGINT	BIGINT	BIGINT	BOOLEAN	BOOLEAN	BIGINT[]
+
+# Compare the complete typed path list inside DuckDB, including edge IDs.
+
+query IIIIIII
+SELECT ord,length_one,length_two,length_bidirectional,reachable_plain,reachable_adaptive,
+ path IS NOT DISTINCT FROM CASE ord
+  WHEN 0 THEN [0::BIGINT,10,1,20,2]
+  WHEN 1 THEN [2::BIGINT,21,1,11,0]
+  WHEN 2 THEN NULL::BIGINT[] ELSE [1::BIGINT] END AS exact_path
+FROM direct_csr_unweighted;
+----
+0	2	2	2	true	true	true
+1	2	2	2	true	true	true
+2	NULL	NULL	NULL	false	false	true
+3	0	0	0	true	true	true
+
+# INT64 costs remain exact, with NULL for the isolated target.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90202,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90202,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT,3::BIGINT) FROM vertices;
+----
+3
+
+query I
+SELECT create_csr_edge(-90202,4::BIGINT,4::BIGINT,4::BIGINT,0::BIGINT,1::BIGINT,10::BIGINT,2::BIGINT);
+----
+2
+
+query I
+SELECT create_csr_edge(-90202,4::BIGINT,4::BIGINT,4::BIGINT,2::BIGINT,1::BIGINT,21::BIGINT,3::BIGINT);
+----
+3
+
+query I
+SELECT create_csr_edge(-90202,4::BIGINT,4::BIGINT,4::BIGINT,1::BIGINT,0::BIGINT,11::BIGINT,2::BIGINT);
+----
+2
+
+statement ok
+CREATE TEMP TABLE direct_csr_int_cost AS SELECT ord,cheapest_path_length(-90202,4::BIGINT,src,dst) AS cost FROM direct_csr_pairs;
+
+query T
+SELECT typeof(cost) FROM direct_csr_int_cost LIMIT 1;
+----
+BIGINT
+
+query II
+SELECT ord,cost FROM direct_csr_int_cost;
+----
+0	5
+1	5
+2	NULL
+3	0
+
+# DOUBLE costs 0.5+1.25 are exact binary64 values. Compare inside DuckDB
+# instead of using SQLLogicTest floating tolerance.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90203,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90203,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT,1.25::DOUBLE) FROM vertices;
+----
+1
+
+query I
+SELECT create_csr_edge(-90203,4::BIGINT,4::BIGINT,4::BIGINT,0::BIGINT,1::BIGINT,10::BIGINT,0.5::DOUBLE);
+----
+0
+
+query I
+SELECT create_csr_edge(-90203,4::BIGINT,4::BIGINT,4::BIGINT,2::BIGINT,1::BIGINT,21::BIGINT,1.25::DOUBLE);
+----
+1
+
+query I
+SELECT create_csr_edge(-90203,4::BIGINT,4::BIGINT,4::BIGINT,1::BIGINT,0::BIGINT,11::BIGINT,0.5::DOUBLE);
+----
+0
+
+statement ok
+CREATE TEMP TABLE direct_csr_double_cost AS SELECT ord,cheapest_path_length(-90203,4::BIGINT,src,dst) AS cost FROM direct_csr_pairs;
+
+query T
+SELECT typeof(cost) FROM direct_csr_double_cost LIMIT 1;
+----
+DOUBLE
+
+query II
+SELECT ord,cost IS NOT DISTINCT FROM CASE ord
+ WHEN 0 THEN 1.75::DOUBLE WHEN 1 THEN 1.75::DOUBLE
+ WHEN 2 THEN NULL::DOUBLE ELSE 0.0::DOUBLE END AS exact_cost
+FROM direct_csr_double_cost;
+----
+0	true
+1	true
+2	true
+3	true
+
+# iterativelength: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90211,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90211,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+statement error
+SELECT iterativelength(-90211,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90211);
+----
+CSR not found with ID -90211
+
+# iterativelength2: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90212,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90212,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+statement error
+SELECT iterativelength2(-90212,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90212);
+----
+CSR not found with ID -90212
+
+# iterativelengthbidirectional: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90213,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90213,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+statement error
+SELECT iterativelengthbidirectional(-90213,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90213);
+----
+CSR not found with ID -90213
+
+# reachability: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90214,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90214,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+statement error
+SELECT reachability(-90214,false,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90214);
+----
+CSR not found with ID -90214
+
+# shortestpath: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90215,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90215,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT) FROM vertices;
+----
+1
+
+statement error
+SELECT shortestpath(-90215,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90215);
+----
+CSR not found with ID -90215
+
+# cheapest_path_length: one completed tuple, four declared.
+# v/e exist; the weighted case also initializes w so its binder succeeds.
+
+query I
+WITH vertices AS MATERIALIZED (
+ SELECT sum(create_csr_vertex(-90216,4::BIGINT,src,cnt))::BIGINT AS n
+ FROM (VALUES (0::BIGINT,1::BIGINT),(1,2),(2,1),(3,0)) v(src,cnt)
+)
+SELECT create_csr_edge(-90216,4::BIGINT,4::BIGINT,n,1::BIGINT,2::BIGINT,20::BIGINT,3::BIGINT) FROM vertices;
+----
+3
+
+statement error
+SELECT cheapest_path_length(-90216,4::BIGINT,0::BIGINT,2::BIGINT);
+----
+CSR paired edge construction is incomplete
+
+# The failed query removes its registry entry at QueryEnd.
+
+statement error
+SELECT csr_get_w_type(-90216);
+----
+CSR not found with ID -90216

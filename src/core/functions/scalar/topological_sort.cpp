@@ -26,6 +26,7 @@ static void TopologicalSortFunction(DataChunk &args, ExpressionState &state, Vec
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 2, "topological_sort");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute the topological order once and cache the result.
 	if (!info.state_initialized) {

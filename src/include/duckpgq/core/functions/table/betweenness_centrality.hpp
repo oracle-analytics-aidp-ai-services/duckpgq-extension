@@ -27,7 +27,8 @@ public:
 
 struct BetweennessCentralityData : TableFunctionData {
 	static unique_ptr<FunctionData> BetweennessCentralityBind(ClientContext &context, TableFunctionBindInput &input,
-	                                                          vector<LogicalType> &return_types, vector<string> &names) {
+	                                                          vector<LogicalType> &return_types,
+	                                                          vector<string> &names) {
 		auto result = make_uniq<BetweennessCentralityData>();
 		result->pg_name = StringValue::Get(input.inputs[0]);
 		result->node_table = StringValue::Get(input.inputs[1]);

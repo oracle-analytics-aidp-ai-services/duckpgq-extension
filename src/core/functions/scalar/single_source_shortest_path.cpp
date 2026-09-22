@@ -24,6 +24,7 @@ static void SingleSourceShortestPathFunction(DataChunk &args, ExpressionState &s
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t) * 2, "single_source_shortest_path");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute the BFS hop distances from the source once and cache the result.
 	if (!info.state_initialized) {
@@ -91,10 +92,10 @@ static void SingleSourceShortestPathFunction(DataChunk &args, ExpressionState &s
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterSingleSourceShortestPathScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(ScalarFunction(
-	    "single_source_shortest_path", {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
-	    LogicalType::BIGINT, SingleSourceShortestPathFunction,
-	    SingleSourceShortestPathFunctionData::SingleSourceShortestPathBind));
+	loader.RegisterFunction(ScalarFunction("single_source_shortest_path",
+	                                       {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
+	                                       LogicalType::BIGINT, SingleSourceShortestPathFunction,
+	                                       SingleSourceShortestPathFunctionData::SingleSourceShortestPathBind));
 }
 
 } // namespace duckdb

@@ -19,6 +19,8 @@ static void CosineSimilarityFunction(DataChunk &args, ExpressionState &state, Ve
 		throw ConstraintException("Need to initialize CSR before computing cosine similarity.");
 	}
 
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
+
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
@@ -76,10 +78,9 @@ static void CosineSimilarityFunction(DataChunk &args, ExpressionState &state, Ve
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterCosineSimilarityScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(ScalarFunction("cosine_similarity",
-	                                       {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
-	                                       LogicalType::DOUBLE, CosineSimilarityFunction,
-	                                       CosineSimilarityFunctionData::CosineSimilarityBind));
+	loader.RegisterFunction(ScalarFunction(
+	    "cosine_similarity", {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT}, LogicalType::DOUBLE,
+	    CosineSimilarityFunction, CosineSimilarityFunctionData::CosineSimilarityBind));
 }
 
 } // namespace duckdb

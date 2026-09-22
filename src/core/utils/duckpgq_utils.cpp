@@ -55,7 +55,7 @@ void CheckAlgorithmMemoryBudget(ClientContext &context, idx_t estimated_bytes, c
 // invocation) gets a fresh id, so multiple graph-algorithm calls in one query —
 // or concurrent queries — never share a CSR slot in DuckPGQState::csr_list.
 static int32_t GetNextCsrId() {
-	static std::atomic<int32_t> counter{0};
+	static std::atomic<int32_t> counter {0};
 	return counter.fetch_add(1, std::memory_order_relaxed);
 }
 

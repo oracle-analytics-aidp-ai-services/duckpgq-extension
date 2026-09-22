@@ -24,6 +24,7 @@ static void HarmonicCentralityFunction(DataChunk &args, ExpressionState &state, 
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 2, "harmonic_centrality");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// State initialization and whole-graph computation (only once)
 	if (!info.state_initialized) {
@@ -47,8 +48,7 @@ static void HarmonicCentralityFunction(DataChunk &args, ExpressionState &state, 
 					frontier.pop();
 
 					auto start_edge = v[u];
-					auto end_edge =
-					    (static_cast<size_t>(u) + 1 < v_size) ? v[u + 1] : static_cast<int64_t>(e.size());
+					auto end_edge = (static_cast<size_t>(u) + 1 < v_size) ? v[u + 1] : static_cast<int64_t>(e.size());
 					for (int64_t j = start_edge; j < end_edge; j++) {
 						int64_t neighbor = e[j];
 						if (dist[neighbor] == -1) {

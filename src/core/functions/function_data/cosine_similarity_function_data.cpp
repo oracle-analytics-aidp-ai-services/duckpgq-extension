@@ -9,9 +9,9 @@ CosineSimilarityFunctionData::CosineSimilarityFunctionData(ClientContext &contex
     : context(context), csr_id(csr_id) {
 }
 
-unique_ptr<FunctionData>
-CosineSimilarityFunctionData::CosineSimilarityBind(ClientContext &context, ScalarFunction &bound_function,
-                                                   vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> CosineSimilarityFunctionData::CosineSimilarityBind(ClientContext &context,
+                                                                            ScalarFunction &bound_function,
+                                                                            vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

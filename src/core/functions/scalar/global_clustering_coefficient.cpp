@@ -23,6 +23,7 @@ static void GlobalClusteringCoefficientFunction(DataChunk &args, ExpressionState
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "global_clustering_coefficient");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute the single graph-level transitivity once and cache it. The same
 	// value is then returned for every source rowid in this and later chunks.
@@ -64,9 +65,8 @@ static void GlobalClusteringCoefficientFunction(DataChunk &args, ExpressionState
 				for (int64_t offset = start; offset < end; offset++) {
 					int64_t neighbor = e[offset];
 					int64_t nstart = v[neighbor];
-					int64_t nend = (static_cast<size_t>(neighbor) + 1 < v_size)
-					                   ? v[neighbor + 1]
-					                   : static_cast<int64_t>(e.size());
+					int64_t nend =
+					    (static_cast<size_t>(neighbor) + 1 < v_size) ? v[neighbor + 1] : static_cast<int64_t>(e.size());
 					for (int64_t offset2 = nstart; offset2 < nend; offset2++) {
 						int is_connected = neighbors.test(e[offset2]);
 						ordered_connected_pairs += is_connected; // 1 if connected, else 0.
@@ -76,10 +76,9 @@ static void GlobalClusteringCoefficientFunction(DataChunk &args, ExpressionState
 
 			// Each triangle is counted 6 times in ordered_connected_pairs.
 			int64_t num_triangles = ordered_connected_pairs / 6;
-			info.transitivity = (num_paths_of_length_2 > 0)
-			                        ? (3.0 * static_cast<double>(num_triangles)) /
-			                              static_cast<double>(num_paths_of_length_2)
-			                        : 0.0;
+			info.transitivity = (num_paths_of_length_2 > 0) ? (3.0 * static_cast<double>(num_triangles)) /
+			                                                      static_cast<double>(num_paths_of_length_2)
+			                                                : 0.0;
 			info.state_initialized = true;
 		}
 	}
@@ -115,10 +114,9 @@ static void GlobalClusteringCoefficientFunction(DataChunk &args, ExpressionState
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterGlobalClusteringCoefficientScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(
-	    ScalarFunction("global_clustering_coefficient", {LogicalType::INTEGER, LogicalType::BIGINT},
-	                   LogicalType::DOUBLE, GlobalClusteringCoefficientFunction,
-	                   GlobalClusteringCoefficientFunctionData::GlobalClusteringCoefficientBind));
+	loader.RegisterFunction(ScalarFunction("global_clustering_coefficient", {LogicalType::INTEGER, LogicalType::BIGINT},
+	                                       LogicalType::DOUBLE, GlobalClusteringCoefficientFunction,
+	                                       GlobalClusteringCoefficientFunctionData::GlobalClusteringCoefficientBind));
 }
 
 } // namespace duckdb

@@ -11,7 +11,7 @@
 namespace duckdb {
 
 unique_ptr<TableRef> JaccardSimilarityFunction::JaccardSimilarityBindReplace(ClientContext &context,
-                                                                            TableFunctionBindInput &input) {
+                                                                             TableFunctionBindInput &input) {
 	// jaccard_similarity(vertex_table, vertex_id_col, edge_table, src_col, dst_col) —
 	// runs directly on the given tables; no CREATE PROPERTY GRAPH / registry required.
 	auto vertex_table = StringUtil::Lower(StringValue::Get(input.inputs[0]));

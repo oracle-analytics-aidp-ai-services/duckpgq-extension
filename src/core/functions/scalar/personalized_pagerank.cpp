@@ -32,6 +32,7 @@ static void PersonalizedPageRankFunction(DataChunk &args, ExpressionState &state
 
 		if (!info.state_initialized) {
 			CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 2, "personalized_pagerank");
+			duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 			// Source vertex is CONSTANT across all rows; read it once here.
 			int64_t source = args.data[2].GetValue(0).GetValue<int64_t>();

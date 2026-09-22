@@ -5,24 +5,24 @@
 #include "duckpgq_state.hpp"
 using namespace duckdb;
 int main() {
-    DuckPGQState state;
+	DuckPGQState state;
 #ifdef DUCKPGQ_LEGACY_CSR
-    auto initial = make_uniq<CSR>();
-    initial->vsize = 18;
-    initial->v = new atomic<int64_t>[18];
-    initial->v[0] = 73;
-    initial->initialized_v = true;
-    state.csr_list.emplace(0, std::move(initial));
+	auto initial = make_uniq<CSR>();
+	initial->vsize = 18;
+	initial->v = new atomic<int64_t>[18];
+	initial->v[0] = 73;
+	initial->initialized_v = true;
+	state.csr_list.emplace(0, std::move(initial));
 #else
-    state.InitializeVertex(0, 16)->v[0] = 73;
+	state.InitializeVertex(0, 16)->v[0] = 73;
 #endif
-    auto acquired = state.GetCSR(0);
+	auto acquired = state.GetCSR(0);
 #ifdef DUCKPGQ_LEGACY_CSR
-    state.csr_list.erase(0);
+	state.csr_list.erase(0);
 #else
-    state.DeleteCSR(0);
+	state.DeleteCSR(0);
 #endif
-    // No other owner survives on the legacy side. This is the actual
-    // production GetCSR result, not a model of the ownership implementation.
-    return acquired->v[0].load() == 73 ? 0 : 1;
+	// No other owner survives on the legacy side. This is the actual
+	// production GetCSR result, not a model of the ownership implementation.
+	return acquired->v[0].load() == 73 ? 0 : 1;
 }
