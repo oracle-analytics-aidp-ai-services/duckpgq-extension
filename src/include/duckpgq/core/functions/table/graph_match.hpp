@@ -92,7 +92,7 @@ public:
 	                              int32_t &extra_alias_counter);
 
 	static void CheckEdgeTableConstraints(const string &src_reference, const string &dst_reference,
-	                                       const shared_ptr<PropertyGraphTable> &edge_table);
+	                                      const shared_ptr<PropertyGraphTable> &edge_table);
 
 	static void AddEdgeJoins(const shared_ptr<PropertyGraphTable> &edge_table,
 	                         const shared_ptr<PropertyGraphTable> &previous_vertex_table,
@@ -103,7 +103,7 @@ public:
 	                         int32_t &extra_alias_counter, unique_ptr<TableRef> &from_clause);
 
 	static bool CanExpandBoundedSubpath(const shared_ptr<PropertyGraphTable> &edge_table, SubPath *subpath,
-	                                     PGQMatchType edge_type);
+	                                    PGQMatchType edge_type);
 	//! [edge_label] is the label written on the quantified hop, or empty. It is
 	//! applied to EVERY step of the expansion, because a quantified edge is not a
 	//! relation in the outer query and so cannot be filtered from outside.

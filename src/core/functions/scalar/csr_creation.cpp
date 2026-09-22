@@ -18,14 +18,18 @@ static void CreateCsrVertexFunction(DataChunk &args, ExpressionState &state, Vec
 	auto duckpgq_state = GetDuckPGQState(info.context, true);
 	int64_t input_size = args.data[1].GetValue(0).GetValue<int64_t>();
 	auto csr = duckpgq_state->InitializeVertex(info.id, input_size);
-
-	BinaryExecutor::Execute<int64_t, int64_t, int64_t>(args.data[2], args.data[3], result, args.size(),
-	                                                   [&](int64_t src, int64_t cnt) {
-		                                                   int64_t edge_count = 0;
-		                                                   csr->v[src + 2] = cnt;
-		                                                   edge_count = edge_count + cnt;
-		                                                   return edge_count;
-	                                                   });
+	try {
+		BinaryExecutor::Execute<int64_t, int64_t, int64_t>(args.data[2], args.data[3], result, args.size(),
+		                                                   [&](int64_t src, int64_t cnt) {
+			                                                   int64_t edge_count = 0;
+			                                                   csr->SetVertexDegree(src, cnt);
+			                                                   edge_count = edge_count + cnt;
+			                                                   return edge_count;
+		                                                   });
+	} catch (...) {
+		duckpgq_state->ScheduleDeleteIfOwned(info.id, csr);
+		throw;
+	}
 }
 
 static void CreateCsrEdgeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -43,42 +47,42 @@ static void CreateCsrEdgeFunction(DataChunk &args, ExpressionState &state, Vecto
 		                          "vertices referred by edge tables exist and are unique for path-finding queries.");
 	}
 
-	auto csr = duckpgq_state->InitializeEdges(info.id, vertex_size, edge_size);
-	if (info.weight_type == LogicalType::SQLNULL) {
-		TernaryExecutor::Execute<int64_t, int64_t, int64_t, int32_t>(
-		    args.data[4], args.data[5], args.data[6], result, args.size(),
-		    [&](int64_t src, int64_t dst, int64_t edge_id) {
-			    auto pos = ++csr->v[src + 1];
-			    csr->e[(int64_t)pos - 1] = dst;
-			    csr->edge_ids[(int64_t)pos - 1] = edge_id;
-			    return 1;
-		    });
-		return;
-	}
-	auto weight_type = args.data[7].GetType().InternalType();
-	csr = duckpgq_state->InitializeWeights(info.id, edge_size, weight_type);
-	if (weight_type == PhysicalType::INT64) {
-		QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, int64_t, int32_t>(
+	auto csr = duckpgq_state->InitializeEdges(info.id, vertex_size, edge_size, &info.context);
+	try {
+		if (info.weight_type == LogicalType::SQLNULL) {
+			TernaryExecutor::Execute<int64_t, int64_t, int64_t, int32_t>(
+			    args.data[4], args.data[5], args.data[6], result, args.size(),
+			    [&](int64_t src, int64_t dst, int64_t edge_id) {
+				    auto write = CSR::BeginEdgeWrite(csr, src, CSRWeightMode::Unweighted);
+				    write.Commit(dst, edge_id);
+				    return 1;
+			    });
+			return;
+		}
+		auto weight_type = args.data[7].GetType().InternalType();
+		csr = duckpgq_state->InitializeWeights(info.id, edge_size, weight_type, &info.context);
+		if (weight_type == PhysicalType::INT64) {
+			QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, int64_t, int32_t>(
+			    args.data[4], args.data[5], args.data[6], args.data[7], result, args.size(),
+			    [&](int64_t src, int64_t dst, int64_t edge_id, int64_t weight) {
+				    auto write = CSR::BeginEdgeWrite(csr, src, CSRWeightMode::Int64);
+				    write.Commit(dst, edge_id, weight);
+				    return weight;
+			    });
+			return;
+		}
+
+		QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, double_t, int32_t>(
 		    args.data[4], args.data[5], args.data[6], args.data[7], result, args.size(),
-		    [&](int64_t src, int64_t dst, int64_t edge_id, int64_t weight) {
-			    auto pos = ++csr->v[src + 1];
-			    csr->e[(int64_t)pos - 1] = dst;
-			    csr->edge_ids[(int64_t)pos - 1] = edge_id;
-			    csr->w[(int64_t)pos - 1] = weight;
+		    [&](int64_t src, int64_t dst, int64_t edge_id, double_t weight) {
+			    auto write = CSR::BeginEdgeWrite(csr, src, CSRWeightMode::Double);
+			    write.Commit(dst, edge_id, weight);
 			    return weight;
 		    });
-		return;
+	} catch (...) {
+		duckpgq_state->ScheduleDeleteIfOwned(info.id, csr);
+		throw;
 	}
-
-	QuaternaryExecutor::Execute<int64_t, int64_t, int64_t, double_t, int32_t>(
-	    args.data[4], args.data[5], args.data[6], args.data[7], result, args.size(),
-	    [&](int64_t src, int64_t dst, int64_t edge_id, double_t weight) {
-		    auto pos = ++csr->v[src + 1];
-		    csr->e[(int64_t)pos - 1] = dst;
-		    csr->edge_ids[(int64_t)pos - 1] = edge_id;
-		    csr->w_double[(int64_t)pos - 1] = weight;
-		    return weight;
-	    });
 }
 
 ScalarFunctionSet GetCSRVertexFunction() {

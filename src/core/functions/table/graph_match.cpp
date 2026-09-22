@@ -138,7 +138,7 @@ unique_ptr<ParsedExpression> BuildLabelFilter(const string &binding, const strin
 } // namespace
 
 shared_ptr<PropertyGraphTable> GraphMatchFunction::FindGraphTable(const string &label,
-                                                                 CreatePropertyGraphInfo &pg_table) {
+                                                                  CreatePropertyGraphInfo &pg_table) {
 	const auto graph_table_entry = pg_table.label_map.find(label);
 	if (graph_table_entry == pg_table.label_map.end()) {
 		throw BinderException("graph_match: the label '%s' is not present in the pattern's tables", label);
@@ -167,9 +167,9 @@ shared_ptr<PropertyGraphTable> GraphMatchFunction::ResolveByRole(bool is_vertex,
 }
 
 unique_ptr<ParsedExpression> GraphMatchFunction::CreateMatchJoinExpression(vector<string> vertex_keys,
-                                                                          vector<string> edge_keys,
-                                                                          const string &vertex_alias,
-                                                                          const string &edge_alias) {
+                                                                           vector<string> edge_keys,
+                                                                           const string &vertex_alias,
+                                                                           const string &edge_alias) {
 	vector<unique_ptr<ParsedExpression>> conditions;
 	if (vertex_keys.size() != edge_keys.size()) {
 		throw BinderException("Vertex columns and edge columns size mismatch");
@@ -208,7 +208,7 @@ unique_ptr<ParsedExpression> GraphMatchFunction::CreateWhereClause(vector<unique
 }
 
 void GraphMatchFunction::CheckEdgeTableConstraints(const string &src_reference, const string &dst_reference,
-                                                  const shared_ptr<PropertyGraphTable> &edge_table) {
+                                                   const shared_ptr<PropertyGraphTable> &edge_table) {
 	if (src_reference != edge_table->source_reference) {
 		throw BinderException("Label %s is not registered as a source reference for edge pattern of table %s",
 		                      src_reference, edge_table->table_name);
@@ -220,9 +220,9 @@ void GraphMatchFunction::CheckEdgeTableConstraints(const string &src_reference, 
 }
 
 void GraphMatchFunction::EdgeTypeAny(const shared_ptr<PropertyGraphTable> &edge_table, const string &edge_binding,
-                                    const string &prev_binding, const string &next_binding,
-                                    vector<unique_ptr<ParsedExpression>> &conditions,
-                                    unique_ptr<TableRef> &from_clause) {
+                                     const string &prev_binding, const string &next_binding,
+                                     vector<unique_ptr<ParsedExpression>> &conditions,
+                                     unique_ptr<TableRef> &from_clause) {
 	// (SELECT src, dst, * FROM edge UNION ALL SELECT dst, src, * FROM edge) edge_binding
 	auto src_dst_select_node = make_uniq<SelectNode>();
 	src_dst_select_node->from_table = edge_table->CreateBaseTableRef(edge_binding);
@@ -266,9 +266,9 @@ void GraphMatchFunction::EdgeTypeAny(const shared_ptr<PropertyGraphTable> &edge_
 }
 
 void GraphMatchFunction::EdgeTypeLeft(const shared_ptr<PropertyGraphTable> &edge_table, const string &next_table_name,
-                                     const string &prev_table_name, const string &edge_binding,
-                                     const string &prev_binding, const string &next_binding,
-                                     vector<unique_ptr<ParsedExpression>> &conditions) {
+                                      const string &prev_table_name, const string &edge_binding,
+                                      const string &prev_binding, const string &next_binding,
+                                      vector<unique_ptr<ParsedExpression>> &conditions) {
 	CheckEdgeTableConstraints(next_table_name, prev_table_name, edge_table);
 	conditions.push_back(
 	    CreateMatchJoinExpression(edge_table->source_pk, edge_table->source_fk, next_binding, edge_binding));
@@ -277,9 +277,9 @@ void GraphMatchFunction::EdgeTypeLeft(const shared_ptr<PropertyGraphTable> &edge
 }
 
 void GraphMatchFunction::EdgeTypeRight(const shared_ptr<PropertyGraphTable> &edge_table, const string &next_table_name,
-                                      const string &prev_table_name, const string &edge_binding,
-                                      const string &prev_binding, const string &next_binding,
-                                      vector<unique_ptr<ParsedExpression>> &conditions) {
+                                       const string &prev_table_name, const string &edge_binding,
+                                       const string &prev_binding, const string &next_binding,
+                                       vector<unique_ptr<ParsedExpression>> &conditions) {
 	CheckEdgeTableConstraints(prev_table_name, next_table_name, edge_table);
 	conditions.push_back(
 	    CreateMatchJoinExpression(edge_table->source_pk, edge_table->source_fk, prev_binding, edge_binding));
@@ -288,10 +288,10 @@ void GraphMatchFunction::EdgeTypeRight(const shared_ptr<PropertyGraphTable> &edg
 }
 
 void GraphMatchFunction::EdgeTypeLeftRight(const shared_ptr<PropertyGraphTable> &edge_table, const string &edge_binding,
-                                          const string &prev_binding, const string &next_binding,
-                                          vector<unique_ptr<ParsedExpression>> &conditions,
-                                          case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
-                                          int32_t &extra_alias_counter) {
+                                           const string &prev_binding, const string &next_binding,
+                                           vector<unique_ptr<ParsedExpression>> &conditions,
+                                           case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
+                                           int32_t &extra_alias_counter) {
 	auto src_left_expr =
 	    CreateMatchJoinExpression(edge_table->source_pk, edge_table->source_fk, next_binding, edge_binding);
 	auto dst_left_expr =
@@ -310,18 +310,18 @@ void GraphMatchFunction::EdgeTypeLeftRight(const shared_ptr<PropertyGraphTable> 
 	auto combined_right_expr = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_AND,
 	                                                            std::move(src_right_expr), std::move(dst_right_expr));
 
-	auto combined_expr = make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(combined_left_expr),
-	                                                      std::move(combined_right_expr));
+	auto combined_expr = make_uniq<ConjunctionExpression>(
+	    ExpressionType::CONJUNCTION_AND, std::move(combined_left_expr), std::move(combined_right_expr));
 	conditions.push_back(std::move(combined_expr));
 }
 
 void GraphMatchFunction::AddEdgeJoins(const shared_ptr<PropertyGraphTable> &edge_table,
-                                     const shared_ptr<PropertyGraphTable> &previous_vertex_table,
-                                     const shared_ptr<PropertyGraphTable> &next_vertex_table, PGQMatchType edge_type,
-                                     const string &edge_binding, const string &prev_binding,
-                                     const string &next_binding, vector<unique_ptr<ParsedExpression>> &conditions,
-                                     case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
-                                     int32_t &extra_alias_counter, unique_ptr<TableRef> &from_clause) {
+                                      const shared_ptr<PropertyGraphTable> &previous_vertex_table,
+                                      const shared_ptr<PropertyGraphTable> &next_vertex_table, PGQMatchType edge_type,
+                                      const string &edge_binding, const string &prev_binding,
+                                      const string &next_binding, vector<unique_ptr<ParsedExpression>> &conditions,
+                                      case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
+                                      int32_t &extra_alias_counter, unique_ptr<TableRef> &from_clause) {
 	if (edge_type != PGQMatchType::MATCH_EDGE_ANY) {
 		alias_map[edge_binding] = edge_table;
 	}
@@ -361,7 +361,7 @@ bool GraphMatchFunction::BoundNeedsExpansion(const SubPath &subpath) {
 }
 
 bool GraphMatchFunction::CanExpandBoundedSubpath(const shared_ptr<PropertyGraphTable> &edge_table, SubPath *subpath,
-                                                PGQMatchType edge_type) {
+                                                 PGQMatchType edge_type) {
 	if (edge_type != PGQMatchType::MATCH_EDGE_RIGHT) {
 		return false;
 	}
@@ -382,11 +382,11 @@ bool GraphMatchFunction::CanExpandBoundedSubpath(const shared_ptr<PropertyGraphT
 }
 
 void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphTable> &edge_table, SubPath *subpath,
-                                                const string &prev_binding, const string &edge_binding,
-                                                const string &next_binding,
-                                                vector<unique_ptr<ParsedExpression>> &conditions,
-                                                unique_ptr<TableRef> &from_clause, int32_t &extra_alias_counter,
-                                                const string &edge_label, const string &edge_label_column) {
+                                                 const string &prev_binding, const string &edge_binding,
+                                                 const string &next_binding,
+                                                 vector<unique_ptr<ParsedExpression>> &conditions,
+                                                 unique_ptr<TableRef> &from_clause, int32_t &extra_alias_counter,
+                                                 const string &edge_label, const string &edge_label_column) {
 	// A RECURSIVE CTE, not a union of fixed-length branches. This shape is a
 	// correctness requirement, not a tidiness preference.
 	//
@@ -465,8 +465,7 @@ void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphT
 	if (edge_table->source_pk.size() != 1 || edge_table->destination_pk.size() != 1 ||
 	    edge_table->source_fk.size() != 1 || edge_table->destination_fk.size() != 1) {
 		throw InternalException("graph_match: bounded path expansion requires single-column keys, got %llu/%llu",
-		                        static_cast<unsigned long long>(edge_table->source_pk.size()),
-		                        static_cast<unsigned long long>(edge_table->destination_pk.size()));
+		                        edge_table->source_pk.size(), edge_table->destination_pk.size());
 	}
 	const auto &vertex_key = edge_table->source_pk[0];
 	const auto &edge_src_fk = edge_table->source_fk[0];
@@ -503,8 +502,7 @@ void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphT
 		step->from_table = std::move(walk_ref);
 		// The intermediate vertex is joined, matching what the branch shape did:
 		// it required each in-between vertex to exist in the vertex relation.
-		CrossJoinTableRef(step->from_table,
-		                  edge_table->destination_pg_table->CreateBaseTableRef(step_vertex_alias));
+		CrossJoinTableRef(step->from_table, edge_table->destination_pg_table->CreateBaseTableRef(step_vertex_alias));
 		CrossJoinTableRef(step->from_table, edge_table->CreateBaseTableRef(step_edge_alias));
 
 		auto s = make_uniq<ColumnRefExpression>(src_column, walk_alias);
@@ -576,12 +574,12 @@ void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphT
 		endpoint_node->select_list.push_back(std::move(d));
 
 		vector<unique_ptr<ParsedExpression>> bounds;
-		bounds.push_back(make_uniq<ComparisonExpression>(
-		    ExpressionType::COMPARE_GREATERTHANOREQUALTO, make_uniq<ColumnRefExpression>(len_column),
-		    make_uniq<ConstantExpression>(Value::BIGINT(subpath->lower))));
-		bounds.push_back(make_uniq<ComparisonExpression>(
-		    ExpressionType::COMPARE_LESSTHANOREQUALTO, make_uniq<ColumnRefExpression>(len_column),
-		    make_uniq<ConstantExpression>(Value::BIGINT(subpath->upper))));
+		bounds.push_back(make_uniq<ComparisonExpression>(ExpressionType::COMPARE_GREATERTHANOREQUALTO,
+		                                                 make_uniq<ColumnRefExpression>(len_column),
+		                                                 make_uniq<ConstantExpression>(Value::BIGINT(subpath->lower))));
+		bounds.push_back(make_uniq<ComparisonExpression>(ExpressionType::COMPARE_LESSTHANOREQUALTO,
+		                                                 make_uniq<ColumnRefExpression>(len_column),
+		                                                 make_uniq<ConstantExpression>(Value::BIGINT(subpath->upper))));
 		endpoint_node->where_clause = BuildConjunction(bounds);
 	}
 	endpoint_node->cte_map.map[cte_name] = std::move(cte_info);
@@ -592,10 +590,10 @@ void GraphMatchFunction::AddBoundedPathExpansion(const shared_ptr<PropertyGraphT
 	endpoint_subquery->alias = path_alias;
 	CrossJoinTableRef(from_clause, std::move(endpoint_subquery));
 
-	conditions.push_back(CreateMatchJoinExpression(edge_table->source_pk, vector<string> {src_column},
-	                                              prev_binding, path_alias));
-	conditions.push_back(CreateMatchJoinExpression(edge_table->destination_pk, vector<string> {dst_column},
-	                                              next_binding, path_alias));
+	conditions.push_back(
+	    CreateMatchJoinExpression(edge_table->source_pk, vector<string> {src_column}, prev_binding, path_alias));
+	conditions.push_back(
+	    CreateMatchJoinExpression(edge_table->destination_pk, vector<string> {dst_column}, next_binding, path_alias));
 }
 
 //! The label as WRITTEN, or empty when the element carried none.
@@ -613,12 +611,12 @@ static string WrittenLabel(const PathElement *element) {
 }
 
 void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path_list,
-                                        vector<unique_ptr<ParsedExpression>> &conditions,
-                                        unique_ptr<SelectNode> &final_select_node,
-                                        case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
-                                        CreatePropertyGraphInfo &pg_table, int32_t &extra_alias_counter,
-                                        MatchExpression &original_ref, const string &vertex_label_column,
-                                        const string &edge_label_column) {
+                                         vector<unique_ptr<ParsedExpression>> &conditions,
+                                         unique_ptr<SelectNode> &final_select_node,
+                                         case_insensitive_map_t<shared_ptr<PropertyGraphTable>> &alias_map,
+                                         CreatePropertyGraphInfo &pg_table, int32_t &extra_alias_counter,
+                                         MatchExpression &original_ref, const string &vertex_label_column,
+                                         const string &edge_label_column) {
 	// A VARIABLE NAMES ONE ELEMENT. Reusing an edge variable was accepted and
 	// silently answered a different question.
 	//
@@ -790,7 +788,7 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 					throw NotImplementedException(
 					    "graph_match: variable-length edges are only supported as right-directed with bounded "
 					    "upper limit <= %lld (use -[e:E]->{lo,hi})",
-					    static_cast<long long>(MAX_BOUNDED_PATH_EXPANSION_UPPER));
+					    MAX_BOUNDED_PATH_EXPANSION_UPPER);
 				}
 			} else {
 				AddEdgeJoins(edge_table, previous_vertex_table, next_vertex_table, edge_element->match_type,
@@ -809,8 +807,8 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 			             next_vertex_element->variable_binding, conditions, alias_map, extra_alias_counter,
 			             final_select_node->from_table);
 			if (!edge_label_column.empty() && !WrittenLabel(edge_element).empty()) {
-				conditions.push_back(BuildLabelFilter(edge_element->variable_binding, edge_label_column,
-				                                      WrittenLabel(edge_element)));
+				conditions.push_back(
+				    BuildLabelFilter(edge_element->variable_binding, edge_label_column, WrittenLabel(edge_element)));
 			}
 		}
 		previous_vertex_element = next_vertex_element;
@@ -822,8 +820,7 @@ void GraphMatchFunction::ProcessPathList(vector<unique_ptr<PathReference>> &path
 //------------------------------------------------------------------------------
 // BindReplace: synthesize the property graph from args, parse, rewrite.
 //------------------------------------------------------------------------------
-unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &context,
-                                                              TableFunctionBindInput &input) {
+unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	// graph_match(pattern, vertex_table, vertex_id, edge_table, src, dst)
 	//
 	// NULL IS REFUSED BEFORE IT REACHES `StringValue::Get`, for the same reason
@@ -833,7 +830,7 @@ unique_ptr<TableRef> GraphMatchFunction::GraphMatchBindReplace(ClientContext &co
 	// calls abort() and takes the process down. A value the caller typed must not
 	// be able to do that. The named parameters were guarded and these six were
 	// not, which left the stated invariant false on six of eight paths.
-	static constexpr const char *POSITIONAL_NAMES[] = {"pattern",    "vertex_table", "vertex_id",
+	static constexpr const char *POSITIONAL_NAMES[] = {"pattern",    "vertex_table",  "vertex_id",
 	                                                   "edge_table", "source_column", "destination_column"};
 	for (idx_t i = 0; i < 6; i++) {
 		if (input.inputs[i].IsNull()) {

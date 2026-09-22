@@ -23,6 +23,7 @@ static void TriangleCountFunction(DataChunk &args, ExpressionState &state, Vecto
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "triangle_count");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	auto &src = args.data[1];
 	UnifiedVectorFormat vdata_src;

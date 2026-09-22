@@ -43,6 +43,8 @@ static void IterativeLengthFunction(DataChunk &args, ExpressionState &state, Vec
 		throw ConstraintException("Need to initialize CSR before doing shortest path");
 	}
 	int64_t v_size = args.data[1].GetValue(0).GetValue<int64_t>();
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
+
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	vector<int64_t> &e = csr->e;
 

@@ -191,6 +191,7 @@ static void ReachabilityFunction(DataChunk &args, ExpressionState &state, Vector
 
 	auto csr_owner = duckpgq_state->GetCSR(info.csr_id);
 	CSR *csr = csr_owner.get();
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr_owner, info.context);
 
 	while (result_size < args.size()) {
 		vector<std::bitset<LANE_LIMIT>> seen(input_size);

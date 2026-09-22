@@ -18,6 +18,8 @@ static void CommonNeighborsFunction(DataChunk &args, ExpressionState &state, Vec
 		throw ConstraintException("Need to initialize CSR before computing common neighbors.");
 	}
 
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
+
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
@@ -74,10 +76,9 @@ static void CommonNeighborsFunction(DataChunk &args, ExpressionState &state, Vec
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterCommonNeighborsScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(ScalarFunction("common_neighbors",
-	                                       {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
-	                                       LogicalType::BIGINT, CommonNeighborsFunction,
-	                                       CommonNeighborsFunctionData::CommonNeighborsBind));
+	loader.RegisterFunction(
+	    ScalarFunction("common_neighbors", {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
+	                   LogicalType::BIGINT, CommonNeighborsFunction, CommonNeighborsFunctionData::CommonNeighborsBind));
 }
 
 } // namespace duckdb

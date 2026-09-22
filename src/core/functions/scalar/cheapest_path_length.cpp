@@ -143,6 +143,7 @@ static void CheapestPathLengthFunction(DataChunk &args, ExpressionState &state, 
 
 	auto csr_owner = duckpgq_state->GetCSR(info.csr_id);
 	CSR *csr = csr_owner.get();
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr_owner, info.context);
 	auto &src = args.data[2];
 
 	UnifiedVectorFormat vdata_src, vdata_target;

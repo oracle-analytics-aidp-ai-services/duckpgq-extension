@@ -49,6 +49,8 @@ static void IterativeLengthBidirectionalFunction(DataChunk &args, ExpressionStat
 
 	D_ASSERT(csr);
 	int64_t v_size = args.data[1].GetValue(0).GetValue<int64_t>();
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
+
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	vector<int64_t> &e = csr->e;
 
@@ -59,8 +61,8 @@ static void IterativeLengthBidirectionalFunction(DataChunk &args, ExpressionStat
 	UnifiedVectorFormat vdata_dst;
 	src.ToUnifiedFormat(args.size(), vdata_src);
 	dst.ToUnifiedFormat(args.size(), vdata_dst);
-	auto src_data = vdata_src.data;
-	auto dst_data = vdata_dst.data;
+	auto src_data = reinterpret_cast<const int64_t *>(vdata_src.data);
+	auto dst_data = reinterpret_cast<const int64_t *>(vdata_dst.data);
 
 	// create result vector
 	result.SetVectorType(VectorType::FLAT_VECTOR);

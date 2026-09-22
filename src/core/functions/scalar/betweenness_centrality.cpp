@@ -24,6 +24,7 @@ static void BetweennessCentralityFunction(DataChunk &args, ExpressionState &stat
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 5 + (idx_t)e.size() * sizeof(int64_t),
 	                           "betweenness_centrality");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute betweenness centrality once (Brandes' algorithm) and cache it.
 	if (!info.state_initialized) {
@@ -66,9 +67,8 @@ static void BetweennessCentralityFunction(DataChunk &args, ExpressionState &stat
 					int64_t cur = queue[head++];
 					stack_order.push_back(cur);
 					auto start_edge = v[cur];
-					auto end_edge = (static_cast<size_t>(cur) + 1 < v_size)
-					                    ? v[cur + 1]
-					                    : static_cast<int64_t>(e.size());
+					auto end_edge =
+					    (static_cast<size_t>(cur) + 1 < v_size) ? v[cur + 1] : static_cast<int64_t>(e.size());
 					for (int64_t j = start_edge; j < end_edge; j++) {
 						int64_t w = e[j];
 						// First time we reach w

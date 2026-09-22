@@ -10,10 +10,8 @@ GlobalClusteringCoefficientFunctionData::GlobalClusteringCoefficientFunctionData
     : context(ctx), csr_id(csr), transitivity(0.0), state_initialized(false) {
 }
 
-unique_ptr<FunctionData>
-GlobalClusteringCoefficientFunctionData::GlobalClusteringCoefficientBind(ClientContext &context,
-                                                                        ScalarFunction &bound_function,
-                                                                        vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> GlobalClusteringCoefficientFunctionData::GlobalClusteringCoefficientBind(
+    ClientContext &context, ScalarFunction &bound_function, vector<unique_ptr<Expression>> &arguments) {
 	if (!arguments[0]->IsFoldable()) {
 		throw InvalidInputException("Id must be constant.");
 	}

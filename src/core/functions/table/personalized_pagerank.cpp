@@ -24,8 +24,8 @@ unique_ptr<TableRef> PersonalizedPageRankFunction::PersonalizedPageRankBindRepla
 
 	auto edge_pg_entry = MakeEdgeSpec(vertex_table, vertex_id, edge_table, src_col, dst_col);
 
-	auto select_node = CreateParamSelectNode(edge_pg_entry, "personalized_pagerank", "personalized_pagerank",
-	                                          Value::BIGINT(source));
+	auto select_node =
+	    CreateParamSelectNode(edge_pg_entry, "personalized_pagerank", "personalized_pagerank", Value::BIGINT(source));
 
 	select_node->cte_map.map["csr_cte"] = CreateDirectedCSRCTE(edge_pg_entry, "src", "edge", "dst");
 

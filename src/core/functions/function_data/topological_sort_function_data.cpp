@@ -10,7 +10,8 @@ TopologicalSortFunctionData::TopologicalSortFunctionData(ClientContext &ctx, int
     : context(ctx), csr_id(csr), state_initialized(false) {
 }
 
-TopologicalSortFunctionData::TopologicalSortFunctionData(ClientContext &ctx, int32_t csr, const vector<int64_t> &order_p)
+TopologicalSortFunctionData::TopologicalSortFunctionData(ClientContext &ctx, int32_t csr,
+                                                         const vector<int64_t> &order_p)
     : context(ctx), csr_id(csr), order(order_p), state_initialized(false) {
 }
 

@@ -18,6 +18,8 @@ static void OverlapSimilarityFunction(DataChunk &args, ExpressionState &state, V
 		throw ConstraintException("Need to initialize CSR before computing overlap similarity.");
 	}
 
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
+
 	int64_t *v = reinterpret_cast<int64_t *>(csr->v);
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
@@ -75,10 +77,9 @@ static void OverlapSimilarityFunction(DataChunk &args, ExpressionState &state, V
 // Register functions
 //------------------------------------------------------------------------------
 void CoreScalarFunctions::RegisterOverlapSimilarityScalarFunction(ExtensionLoader &loader) {
-	loader.RegisterFunction(ScalarFunction("overlap_similarity",
-	                                       {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT},
-	                                       LogicalType::DOUBLE, OverlapSimilarityFunction,
-	                                       OverlapSimilarityFunctionData::OverlapSimilarityBind));
+	loader.RegisterFunction(ScalarFunction(
+	    "overlap_similarity", {LogicalType::INTEGER, LogicalType::BIGINT, LogicalType::BIGINT}, LogicalType::DOUBLE,
+	    OverlapSimilarityFunction, OverlapSimilarityFunctionData::OverlapSimilarityBind));
 }
 
 } // namespace duckdb

@@ -25,6 +25,7 @@ static void ComputeHits(HitsFunctionData &info) {
 	size_t v_size = csr->vsize;
 
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 4, "hits");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// State initialization / computation (only once)
 	if (info.state_initialized) {

@@ -23,12 +23,14 @@ public:
 		bind_replace = PreferentialAttachmentBindReplace;
 	}
 
-	static unique_ptr<TableRef> PreferentialAttachmentBindReplace(ClientContext &context, TableFunctionBindInput &input);
+	static unique_ptr<TableRef> PreferentialAttachmentBindReplace(ClientContext &context,
+	                                                              TableFunctionBindInput &input);
 };
 
 struct PreferentialAttachmentData : TableFunctionData {
 	static unique_ptr<FunctionData> PreferentialAttachmentBind(ClientContext &context, TableFunctionBindInput &input,
-	                                                           vector<LogicalType> &return_types, vector<string> &names) {
+	                                                           vector<LogicalType> &return_types,
+	                                                           vector<string> &names) {
 		auto result = make_uniq<PreferentialAttachmentData>();
 		result->pg_name = StringValue::Get(input.inputs[0]);
 		result->node_table = StringValue::Get(input.inputs[1]);

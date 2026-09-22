@@ -22,6 +22,7 @@ static void InDegreeCentralityFunction(DataChunk &args, ExpressionState &state, 
 	vector<int64_t> &e = csr->e;
 	size_t v_size = csr->vsize;
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(int64_t), "in_degree_centrality");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Compute the in-degrees once and cache the result. The CSR only stores
 	// out-edges, so we accumulate incoming counts by scanning all out-edges.

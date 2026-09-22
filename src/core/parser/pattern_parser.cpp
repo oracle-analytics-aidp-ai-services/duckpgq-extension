@@ -96,8 +96,7 @@ private:
 	}
 
 	[[noreturn]] void Fail(const string &what) const {
-		throw ParserException("graph_match: invalid pattern '%s' near offset %llu: %s", src,
-		                      static_cast<unsigned long long>(pos), what);
+		throw ParserException("graph_match: invalid pattern '%s' near offset %llu: %s", src, pos, what);
 	}
 
 	void Expect(char c, const string &what) {

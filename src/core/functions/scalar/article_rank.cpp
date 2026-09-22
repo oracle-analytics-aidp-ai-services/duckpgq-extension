@@ -25,6 +25,7 @@ static void ArticleRankFunction(DataChunk &args, ExpressionState &state, Vector 
 	size_t v_size = csr->vsize;
 
 	CheckAlgorithmMemoryBudget(info.context, (idx_t)v_size * sizeof(double) * 2, "article_rank");
+	duckpgq_state->FinalizeCSRForRead(info.csr_id, csr, info.context);
 
 	// Average out-degree across all vertices: number of edges / number of vertices.
 	double avg_degree = static_cast<double>(e.size()) / static_cast<double>(v_size);
@@ -37,9 +38,9 @@ static void ArticleRankFunction(DataChunk &args, ExpressionState &state, Vector 
 
 		if (!info.state_initialized) {
 			info.rank.resize(v_size, 1.0 / static_cast<double>(v_size)); // Initial rank for each node
-			info.temp_rank.resize(v_size, 0.0); // Temporary storage for ranks during iteration
-			info.damping_factor = 0.85;         // Typical damping factor
-			info.convergence_threshold = 1e-6;  // Convergence threshold
+			info.temp_rank.resize(v_size, 0.0);                          // Temporary storage for ranks during iteration
+			info.damping_factor = 0.85;                                  // Typical damping factor
+			info.convergence_threshold = 1e-6;                           // Convergence threshold
 			info.state_initialized = true;
 			info.converged = false;
 			info.iteration_count = 0;
